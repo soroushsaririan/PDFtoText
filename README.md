@@ -21,7 +21,7 @@ sample data, and run a first analysis pass against it. The first run also
 downloads the handwriting model (~7 GB, one-time, cached under
 `~/.cache/huggingface`).
 
-### 🍎 macOS setup
+### macOS setup
 
 Requires [Homebrew](https://brew.sh).
 
@@ -31,7 +31,7 @@ cd PDFtoText
 ./setup.sh
 ```
 
-### 🐧 Linux setup
+### Linux setup
 
 Ubuntu/Debian (via `apt`) or Fedora (via `dnf`) -- installs system packages
 with `sudo`. Other distros aren't auto-detected: install `tesseract` and
