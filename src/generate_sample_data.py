@@ -20,8 +20,8 @@ EXERCISE_OPTIONS = [
 ]
 
 HAND_FONT_BY_PID = {
-    "VPT001": "bradley", "VPT002": "noteworthy", "VPT003": "snell",
-    "VPT004": "snell", "VPT005": "bradley",
+    "VPT001": "caveat", "VPT002": "shadows", "VPT003": "sacramento",
+    "VPT004": "sacramento", "VPT005": "caveat",
 }
 
 
@@ -132,7 +132,7 @@ def placeholder_dir(path, note):
 
 def build_participant(pid, data, seed_base):
     profile = data["profile"]
-    hand_font = HAND_FONT_BY_PID.get(pid, "bradley")
+    hand_font = HAND_FONT_BY_PID.get(pid, "caveat")
     messiness = data.get("messiness", 1.0)
     pdir = OUT_DIR / pid
     pdir.mkdir(parents=True, exist_ok=True)

@@ -1,0 +1,23 @@
+# Python 3.11 recommended (create with: python3.11 -m venv .venv)
+# Install with: ./.venv/bin/pip install -r requirements-linux.txt
+# Also requires the tesseract binary on PATH: sudo apt-get install tesseract-ocr
+#
+# Unlike requirements.txt (macOS), torch/torchvision are installed from the
+# default PyPI index here rather than the CPU-only wheel index, so pip pulls
+# a CUDA-capable build automatically if an NVIDIA GPU + drivers are present.
+# It still works fine on a CPU-only machine, just falls back at runtime.
+
+torch
+torchvision
+transformers>=4.51.0
+accelerate
+qwen-vl-utils
+pymupdf
+pillow
+numpy
+pandas
+reportlab
+python-docx
+pytesseract
+kaggle
+jiwer

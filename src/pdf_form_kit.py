@@ -1,4 +1,5 @@
 import random
+from pathlib import Path
 
 from reportlab.lib.pagesizes import LETTER
 from reportlab.pdfbase import pdfmetrics
@@ -7,10 +8,12 @@ from reportlab.pdfgen import canvas
 
 PAGE_W, PAGE_H = LETTER
 
+FONTS_DIR = Path(__file__).resolve().parent.parent / "assets" / "fonts"
+
 HAND_FONTS = {
-    "bradley": "/System/Library/Fonts/Supplemental/Bradley Hand Bold.ttf",
-    "noteworthy": "/System/Library/Fonts/Noteworthy.ttc",
-    "snell": "/System/Library/Fonts/Supplemental/SnellRoundhand.ttc",
+    "caveat": str(FONTS_DIR / "Caveat.ttf"),
+    "shadows": str(FONTS_DIR / "ShadowsIntoLight.ttf"),
+    "sacramento": str(FONTS_DIR / "Sacramento.ttf"),
 }
 
 _REGISTERED = set()
@@ -29,7 +32,7 @@ def _register(font_key):
 
 
 class FormPage:
-    def __init__(self, path, hand_font="bradley", seed=0):
+    def __init__(self, path, hand_font="caveat", seed=0):
         self.path = path
         self.c = canvas.Canvas(str(path), pagesize=LETTER)
         self.hand_font = _register(hand_font)

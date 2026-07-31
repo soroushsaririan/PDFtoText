@@ -7,12 +7,21 @@ CSV for stats.
 
 ## Requirements
 
-- macOS with [Homebrew](https://brew.sh)
+- macOS or Linux (Ubuntu/Debian or Fedora tested)
 - Python 3.11
 - ~15 GB free disk space (one-time handwriting-model download)
 - A free Kaggle account -- only needed for the optional benchmark tools in `benchmark/`
 
 ## Setup
+
+Two setup scripts, one per OS -- pick the one matching your machine. Both
+do the same thing: install system dependencies, create a Python 3.11
+virtual environment, install everything else, generate the synthetic
+sample data, and run a first analysis pass against it. The first run also
+downloads the handwriting model (~7 GB, one-time, cached under
+`~/.cache/huggingface`).
+
+**macOS** (requires [Homebrew](https://brew.sh)):
 
 ```bash
 git clone https://github.com/soroushsaririan/PDFtoText.git
@@ -20,10 +29,20 @@ cd PDFtoText
 ./setup.sh
 ```
 
-This installs `tesseract`, creates a Python 3.11 virtual environment,
-installs all dependencies, generates the synthetic sample data, and runs
-a first analysis pass against it. The first run also downloads the
-handwriting model (~7 GB, one-time, cached under `~/.cache/huggingface`).
+**Linux** (Ubuntu/Debian via `apt`, or Fedora via `dnf`; installs system
+packages with `sudo`):
+
+```bash
+git clone https://github.com/soroushsaririan/PDFtoText.git
+cd PDFtoText
+./setup-linux.sh
+```
+
+The Linux script installs `torch`/`torchvision` from the default PyPI
+index rather than the CPU-only build, so it picks up an NVIDIA GPU
+automatically if drivers are present (falls back to CPU cleanly if not).
+Other distros aren't auto-detected -- install `tesseract` and Python 3.11
+with your package manager, then run the steps in `setup-linux.sh` by hand.
 
 ## Running it
 
@@ -33,10 +52,12 @@ Against the bundled sample data:
 ./.venv/bin/python src/run_analysis.py
 ```
 
-Against the real USB drive:
+Against the real USB drive (macOS mounts under `/Volumes/`, Linux
+typically under `/media/$USER/` or `/mnt/`):
 
 ```bash
-./.venv/bin/python src/run_analysis.py --base-dir /Volumes/USB --out-dir outputs_real
+./.venv/bin/python src/run_analysis.py --base-dir /Volumes/USB --out-dir outputs_real       # macOS
+./.venv/bin/python src/run_analysis.py --base-dir /media/$USER/USB --out-dir outputs_real   # Linux
 ```
 
 Output goes to `outputs/reports/` (one markdown report per participant,
@@ -73,4 +94,5 @@ combined `outputs/keyword_hits.csv`.
 
 ## Re-installing from scratch
 
-Re-run `./setup.sh` -- it's safe to run again.
+Re-run `./setup.sh` (macOS) or `./setup-linux.sh` (Linux) -- both are safe
+to run again.
