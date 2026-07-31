@@ -21,7 +21,9 @@ sample data, and run a first analysis pass against it. The first run also
 downloads the handwriting model (~7 GB, one-time, cached under
 `~/.cache/huggingface`).
 
-**macOS** (requires [Homebrew](https://brew.sh)):
+### 🍎 macOS setup
+
+Requires [Homebrew](https://brew.sh).
 
 ```bash
 git clone https://github.com/soroushsaririan/PDFtoText.git
@@ -29,8 +31,12 @@ cd PDFtoText
 ./setup.sh
 ```
 
-**Linux** (Ubuntu/Debian via `apt`, or Fedora via `dnf`; installs system
-packages with `sudo`):
+### 🐧 Linux setup
+
+Ubuntu/Debian (via `apt`) or Fedora (via `dnf`) -- installs system packages
+with `sudo`. Other distros aren't auto-detected: install `tesseract` and
+Python 3.11 with your package manager, then run the steps in
+`setup-linux.sh` by hand.
 
 ```bash
 git clone https://github.com/soroushsaririan/PDFtoText.git
@@ -41,8 +47,6 @@ cd PDFtoText
 The Linux script installs `torch`/`torchvision` from the default PyPI
 index rather than the CPU-only build, so it picks up an NVIDIA GPU
 automatically if drivers are present (falls back to CPU cleanly if not).
-Other distros aren't auto-detected -- install `tesseract` and Python 3.11
-with your package manager, then run the steps in `setup-linux.sh` by hand.
 
 ## Running it
 
