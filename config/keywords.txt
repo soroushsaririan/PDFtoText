@@ -1,0 +1,20 @@
+# Keyword list for handwriting_analysis
+#
+# One keyword or phrase per line. Matching is case-insensitive and looks
+# for the phrase anywhere in the OCR'd text of every PDF (printed text,
+# checkbox labels, and handwriting transcriptions all included).
+#
+# Lines starting with # are ignored. Leave this file (aside from comments)
+# empty for now -- analyze_participant.py runs fine with no keywords, it
+# just skips the keyword-match section of each report. Add your own terms
+# below whenever you're ready, for example:
+#
+# sharp pain
+# numbness
+# IT band
+# shin splint
+# plantar fasciitis
+# missed
+# fell
+# swelling
+# giving way

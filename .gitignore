@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+.venv-vlm/
+
+# Generated data / outputs (reproducible via scripts, not source)
+sample_usb/
+outputs/
+outputs_real/
+
+# Benchmark data (large, third-party licensed -- fetched on demand)
+benchmark/data/
+
+# macOS
+.DS_Store
+
+# Editor
+.vscode/
+.idea/
