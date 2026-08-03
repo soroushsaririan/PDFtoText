@@ -3,23 +3,76 @@ set -e
 
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
+MIN_PY_MINOR=10
+
+version_ok() {
+  # $1: a python interpreter path/command. Returns 0 if it's Python 3.$MIN_PY_MINOR+.
+  "$1" -c "import sys; exit(0 if sys.version_info >= (3, $MIN_PY_MINOR) else 1)" >/dev/null 2>&1
+}
+
+find_python() {
+  for candidate in python3.11 python3.12 python3.13 python3; do
+    if command -v "$candidate" >/dev/null 2>&1 && version_ok "$candidate"; then
+      command -v "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+echo "==> Installing tesseract..."
 if command -v apt-get >/dev/null 2>&1; then
-  echo "==> Installing system dependencies (tesseract, Python 3.11) via apt..."
-  sudo apt-get update -qq
-  sudo apt-get install -y tesseract-ocr python3.11 python3.11-venv python3.11-dev
+  sudo apt-get update -qq || echo "    (some apt sources failed to refresh -- continuing with what's cached)"
+  sudo apt-get install -y tesseract-ocr
 elif command -v dnf >/dev/null 2>&1; then
-  echo "==> Installing system dependencies via dnf..."
-  sudo dnf install -y tesseract python3.11
+  sudo dnf install -y tesseract
 else
   echo "Could not detect apt or dnf on this system."
-  echo "Install tesseract and Python 3.11 manually with your distro's package manager, then re-run this script."
+  echo "Install tesseract manually with your distro's package manager, then re-run this script."
   exit 1
 fi
 
-PYTHON_BIN="$(command -v python3.11)"
+PYTHON_BIN="$(find_python || true)"
+
 if [ -z "$PYTHON_BIN" ]; then
-  echo "python3.11 still not found after install -- check your package manager's output above."
+  echo "==> No suitable Python 3.$MIN_PY_MINOR+ found -- attempting to install python3.11..."
+  if command -v apt-get >/dev/null 2>&1; then
+    if sudo apt-get install -y python3.11 python3.11-venv python3.11-dev 2>/dev/null; then
+      PYTHON_BIN="$(command -v python3.11)"
+    else
+      echo "    python3.11 isn't in this system's default apt repos (common on newer Ubuntu releases,"
+      echo "    which ship python3.12 instead). Trying the deadsnakes PPA..."
+      if sudo apt-get install -y software-properties-common 2>/dev/null \
+        && sudo add-apt-repository -y ppa:deadsnakes/ppa 2>/dev/null \
+        && sudo apt-get update -qq 2>/dev/null \
+        && sudo apt-get install -y python3.11 python3.11-venv python3.11-dev 2>/dev/null; then
+        PYTHON_BIN="$(command -v python3.11)"
+      else
+        echo "    Could not reach the deadsnakes PPA either (may be blocked on this network)."
+      fi
+    fi
+  elif command -v dnf >/dev/null 2>&1; then
+    sudo dnf install -y python3.11 || true
+    PYTHON_BIN="$(command -v python3.11 || true)"
+  fi
+fi
+
+if [ -z "$PYTHON_BIN" ]; then
+  PYTHON_BIN="$(find_python || true)"
+fi
+
+if [ -z "$PYTHON_BIN" ]; then
+  echo "Could not find or install any Python 3.$MIN_PY_MINOR+ interpreter."
+  echo "Install one manually (e.g. python3.11, or via pyenv/conda) and re-run this script."
   exit 1
+fi
+
+PY_VERSION="$("$PYTHON_BIN" -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
+echo "==> Using $PYTHON_BIN (Python $PY_VERSION)"
+if [ "$PY_VERSION" != "3.11" ]; then
+  echo "    Note: this project was developed and tested on Python 3.11. $PY_VERSION should work fine"
+  echo "    for this pipeline, but if you hit dependency issues, installing 3.11 specifically"
+  echo "    (e.g. via the deadsnakes PPA or pyenv) is the safest fix."
 fi
 
 echo "==> Creating virtual environment (.venv)..."

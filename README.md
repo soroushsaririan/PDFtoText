@@ -47,6 +47,15 @@ cd PDFtoText
 The Linux script installs `torch`/`torchvision` from the default PyPI
 index rather than the CPU-only build, so it picks up an NVIDIA GPU
 automatically if drivers are present (falls back to CPU cleanly if not).
+It tries `python3.11` first, falls back to the deadsnakes PPA if your
+distro's default apt repos don't have it (common on newer Ubuntu releases,
+which ship `python3.12` instead), and if that's unreachable too (e.g. a
+locked-down network), falls back to whatever Python 3.10+ is already on
+the system with a warning -- it doesn't just fail.
+
+> If `git clone` says the destination already exists, either `cd` into
+> the existing folder and run `git pull` instead of cloning again, or
+> remove the old folder first (`rm -rf PDFtoText`) if it's not needed.
 
 ## Running it
 
