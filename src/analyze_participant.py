@@ -94,7 +94,7 @@ def discover_files(participant_dir):
     return {"crf_visits": crf_visits, "exit_survey": exit_survey, "weeks": weeks, "unmatched": unmatched}
 
 
-def analyze_participant(participant_dir, image_dir, ocr_cache_dir, keywords, use_vlm=True, force=False):
+def analyze_participant(participant_dir, image_dir, ocr_cache_dir, keywords, use_vlm=True, force=False, engine="vlm"):
     participant_dir = Path(participant_dir)
     pid = participant_dir.name
     files = discover_files(participant_dir)
@@ -111,7 +111,9 @@ def analyze_participant(participant_dir, image_dir, ocr_cache_dir, keywords, use
     }
 
     def ocr_one(path):
-        return run_ocr_on_file(path, image_dir=image_dir, ocr_cache_dir=ocr_cache_dir, use_vlm=use_vlm, force=force)
+        return run_ocr_on_file(
+            path, image_dir=image_dir, ocr_cache_dir=ocr_cache_dir, use_vlm=use_vlm, force=force, engine=engine,
+        )
 
     def ocr_many(paths):
         pages = []

@@ -36,13 +36,18 @@ def main():
     parser.add_argument("--out-dir", default=str(PROJECT_ROOT / "outputs"), help="Where reports/CSVs/OCR cache are written.")
     parser.add_argument("--keywords-file", default=str(PROJECT_ROOT / "config" / "keywords.txt"))
     parser.add_argument("--model", default=None, help="Override the handwriting VLM, e.g. Qwen/Qwen2.5-VL-7B-Instruct.")
+    parser.add_argument("--engine", choices=("vlm", "trocr"), default="vlm",
+                         help="Handwriting reading engine: 'vlm' (Qwen2.5-VL, default) or 'trocr' (microsoft/trocr-*-handwritten).")
     parser.add_argument("--no-vlm", action="store_true", help="Skip the handwriting model; printed/checkbox fields only.")
     parser.add_argument("--force", action="store_true", help="Ignore the OCR cache and re-run OCR on every PDF.")
     parser.add_argument("--participants", nargs="*", default=None, help="Only process these participant IDs, e.g. VPT001 VPT002.")
     args = parser.parse_args()
 
     if args.model:
-        os.environ["VLM_MODEL_NAME"] = args.model
+        if args.engine == "trocr":
+            os.environ["TROCR_MODEL_NAME"] = args.model
+        else:
+            os.environ["VLM_MODEL_NAME"] = args.model
 
     base_dir = Path(args.base_dir)
     out_dir = Path(args.out_dir)
@@ -65,7 +70,10 @@ def main():
     print(f"Base folder : {base_dir}")
     print(f"Participants: {[p.name for p in participants]}")
     print(f"Keywords    : {keywords or '(none configured yet)'}")
-    print(f"VLM model   : {'disabled' if args.no_vlm else os.environ.get('VLM_MODEL_NAME', 'Qwen/Qwen2.5-VL-3B-Instruct')}")
+    default_model = {"vlm": "Qwen/Qwen2.5-VL-3B-Instruct", "trocr": "microsoft/trocr-base-handwritten"}[args.engine]
+    model_env_var = "TROCR_MODEL_NAME" if args.engine == "trocr" else "VLM_MODEL_NAME"
+    print(f"Engine      : {'disabled' if args.no_vlm else args.engine}")
+    print(f"Handwriting model : {'disabled' if args.no_vlm else os.environ.get(model_env_var, default_model)}")
     print()
 
     all_rows = []
@@ -75,7 +83,7 @@ def main():
         print(f"Analyzing {pdir.name} ...")
         result = analyze_participant(
             pdir, image_dir=image_dir, ocr_cache_dir=ocr_cache_dir,
-            keywords=keywords, use_vlm=not args.no_vlm, force=args.force,
+            keywords=keywords, use_vlm=not args.no_vlm, force=args.force, engine=args.engine,
         )
         report_md = render_participant_report(result, keywords_configured=bool(keywords))
         (reports_dir / f"{pdir.name}_report.md").write_text(report_md, encoding="utf-8")

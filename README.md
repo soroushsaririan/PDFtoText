@@ -87,7 +87,8 @@ rather than being silently skipped.
 | `--base-dir PATH` | Folder with `VPT001`, `VPT002`, ... subfolders (default: `sample_usb/`) |
 | `--out-dir PATH` | Where reports/CSVs/cache are written (default: `outputs/`) |
 | `--keywords-file PATH` | Override the keyword list (default: `config/keywords.txt`) |
-| `--model NAME` | Use a different handwriting model, e.g. `Qwen/Qwen2.5-VL-7B-Instruct` |
+| `--engine {vlm,trocr}` | Handwriting engine to use (default: `vlm`) |
+| `--model NAME` | Use a different handwriting model, e.g. `Qwen/Qwen2.5-VL-7B-Instruct` or `microsoft/trocr-large-handwritten` |
 | `--no-vlm` | Skip the handwriting model; printed/checkbox/circled fields only (fast) |
 | `--participants ID ...` | Only process specific participants, e.g. `VPT001 VPT003` |
 | `--force` | Ignore the OCR cache and redo everything |

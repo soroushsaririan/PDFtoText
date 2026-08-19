@@ -12,6 +12,8 @@ from PIL import Image
 from pytesseract import Output
 
 VLM_MODEL_NAME = os.environ.get("VLM_MODEL_NAME", "Qwen/Qwen2.5-VL-3B-Instruct")
+TROCR_MODEL_NAME = os.environ.get("TROCR_MODEL_NAME", "microsoft/trocr-base-handwritten")
+HANDWRITING_ENGINES = ("vlm", "trocr")
 
 RENDER_ZOOM = 3.0
 TESSERACT_WORD_CONF_THRESHOLD = 70
@@ -86,6 +88,46 @@ def _vlm_read(pil_crop, label_context):
     trimmed = [out[len(inp):] for inp, out in zip(inputs.input_ids, generated_ids)]
     decoded = processor.batch_decode(trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
     return _clean_vlm_text(decoded), 0.0
+
+
+_trocr_processor = None
+_trocr_model = None
+
+
+def _load_trocr():
+    global _trocr_processor, _trocr_model
+    if _trocr_model is None:
+        import torch
+        from transformers import TrOCRProcessor, VisionEncoderDecoderModel
+        from transformers.utils import logging as hf_logging
+
+        hf_logging.set_verbosity_error()
+        _trocr_processor = TrOCRProcessor.from_pretrained(TROCR_MODEL_NAME)
+        _trocr_model = VisionEncoderDecoderModel.from_pretrained(TROCR_MODEL_NAME)
+        _trocr_model.eval()
+        if torch.cuda.is_available():
+            device = "cuda"
+        elif torch.backends.mps.is_available():
+            device = "mps"
+        else:
+            device = "cpu"
+        _trocr_model.to(device)
+    return _trocr_processor, _trocr_model
+
+
+def _trocr_read(pil_crop, label_context=None):
+    import torch
+
+    processor, model = _load_trocr()
+    device = next(model.parameters()).device
+    pixel_values = processor(images=pil_crop.convert("RGB"), return_tensors="pt").pixel_values.to(device)
+    with torch.no_grad():
+        generated_ids = model.generate(pixel_values, max_new_tokens=32, do_sample=False)
+    text = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
+    return text.strip(), 0.0
+
+
+HANDWRITING_READERS = {"vlm": _vlm_read, "trocr": _trocr_read}
 
 
 @dataclass
@@ -183,7 +225,7 @@ def _looks_like_checkbox(w, h):
     return 0.5 <= aspect <= 1.8
 
 
-def _read_handwriting_region(pil_image, box, label_context, fallback_conf):
+def _read_handwriting_region(pil_image, box, label_context, fallback_conf, engine="vlm"):
     x0, y0, x1, y1 = box
     x0, y0 = max(0, x0), max(0, y0)
     x1, y1 = min(pil_image.width, x1), min(pil_image.height, y1)
@@ -191,16 +233,17 @@ def _read_handwriting_region(pil_image, box, label_context, fallback_conf):
         return None
     crop = pil_image.crop((x0, y0, x1, y1))
     bbox = (x0, y0, x1 - x0, y1 - y0)
+    reader = HANDWRITING_READERS[engine]
     try:
-        text, logprob = _vlm_read(crop, label_context)
+        text, conf = reader(crop, label_context)
     except Exception as exc:
-        return OcrLine(text=f"[VLM unavailable: {exc}]", bbox=bbox, engine="handwriting_error", confidence=fallback_conf)
+        return OcrLine(text=f"[{engine} unavailable: {exc}]", bbox=bbox, engine="handwriting_error", confidence=fallback_conf)
     if not text:
         text = "[illegible]"
-    return OcrLine(text=text, bbox=bbox, engine="handwriting", confidence=logprob)
+    return OcrLine(text=text, bbox=bbox, engine="handwriting", confidence=conf)
 
 
-def ocr_page(image_path, use_vlm=True, label_hint=None):
+def ocr_page(image_path, use_vlm=True, label_hint=None, engine="vlm"):
     pil_image = Image.open(image_path).convert("RGB")
     rgb = np.array(pil_image)
     gray = np.array(pil_image.convert("L"))
@@ -285,7 +328,7 @@ def ocr_page(image_path, use_vlm=True, label_hint=None):
 
             label_context = printed_text_context or label_hint
             line = _read_handwriting_region(
-                pil_image, (xs0 - CROP_PADDING, cy0 - cpad, search_x1, cy1 + cpad), label_context, mean_conf,
+                pil_image, (xs0 - CROP_PADDING, cy0 - cpad, search_x1, cy1 + cpad), label_context, mean_conf, engine=engine,
             )
             if line:
                 result_lines.append(line)
@@ -294,17 +337,24 @@ def ocr_page(image_path, use_vlm=True, label_hint=None):
     return result_lines
 
 
-def _cache_key(file_path):
+def _engine_model_name(engine):
+    return VLM_MODEL_NAME if engine == "vlm" else TROCR_MODEL_NAME
+
+
+def _cache_key(file_path, engine):
     stat = Path(file_path).stat()
-    raw = f"{file_path}:{stat.st_size}:{stat.st_mtime}:{VLM_MODEL_NAME}"
+    raw = f"{file_path}:{stat.st_size}:{stat.st_mtime}:{engine}:{_engine_model_name(engine)}"
     return hashlib.sha1(raw.encode()).hexdigest()[:16]
 
 
-def run_ocr_on_file(file_path, image_dir, ocr_cache_dir, use_vlm=True, force=False):
+def run_ocr_on_file(file_path, image_dir, ocr_cache_dir, use_vlm=True, force=False, engine="vlm"):
+    if engine not in HANDWRITING_ENGINES:
+        raise ValueError(f"Unknown handwriting engine: {engine!r} (expected one of {HANDWRITING_ENGINES})")
+
     file_path = Path(file_path)
     ocr_cache_dir = Path(ocr_cache_dir)
     ocr_cache_dir.mkdir(parents=True, exist_ok=True)
-    cache_path = ocr_cache_dir / f"{file_path.stem}.{_cache_key(file_path)}.json"
+    cache_path = ocr_cache_dir / f"{file_path.stem}.{_cache_key(file_path, engine)}.json"
 
     if cache_path.exists() and not force:
         cached = json.loads(cache_path.read_text())
@@ -317,12 +367,13 @@ def run_ocr_on_file(file_path, image_dir, ocr_cache_dir, use_vlm=True, force=Fal
     image_paths = render_file_to_images(file_path, Path(image_dir) / file_path.stem)
     pages = []
     for i, img_path in enumerate(image_paths, start=1):
-        lines = ocr_page(img_path, use_vlm=use_vlm)
+        lines = ocr_page(img_path, use_vlm=use_vlm, engine=engine)
         pages.append(PageResult(page_number=i, image_path=str(img_path), lines=lines))
 
     serializable = {
         "source": str(file_path),
-        "model": VLM_MODEL_NAME,
+        "engine": engine,
+        "model": _engine_model_name(engine),
         "pages": [
             {
                 "page_number": p.page_number,
