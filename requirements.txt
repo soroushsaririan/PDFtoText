@@ -2,10 +2,12 @@
 # Python 3.11 recommended (create with: python3.11 -m venv .venv)
 # Install with: ./.venv/bin/pip install -r requirements.txt
 # Also requires the tesseract binary on PATH: brew install tesseract
+# transformers is pinned exactly: newer releases break TrOCR's tokenizer loading,
+# 4.51.3 is the newest version confirmed to support both TrOCR and Qwen2.5-VL.
 
 torch --index-url https://download.pytorch.org/whl/cpu
 torchvision --index-url https://download.pytorch.org/whl/cpu
-transformers>=4.51.0
+transformers==4.51.3
 accelerate
 qwen-vl-utils
 pymupdf
