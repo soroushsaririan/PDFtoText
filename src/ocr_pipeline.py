@@ -11,9 +11,14 @@ import pytesseract
 from PIL import Image
 from pytesseract import Output
 
+import prompts
+
 VLM_MODEL_NAME = os.environ.get("VLM_MODEL_NAME", "Qwen/Qwen2.5-VL-3B-Instruct")
 TROCR_MODEL_NAME = os.environ.get("TROCR_MODEL_NAME", "microsoft/trocr-base-handwritten")
 HANDWRITING_ENGINES = ("vlm", "trocr")
+
+VLM_MAX_NEW_TOKENS = {"notes": 128}
+VLM_MAX_NEW_TOKENS_DEFAULT = 32
 
 RENDER_ZOOM = 3.0
 TESSERACT_WORD_CONF_THRESHOLD = 70
@@ -47,23 +52,8 @@ def _load_vlm():
     return _vlm_processor, _vlm_model
 
 
-def _build_prompt(label_context):
-    if label_context:
-        intro = (
-            "This image is a cropped section of a medical case-report form, showing the "
-            f'handwritten answer to the printed question: "{label_context}"\n\n'
-        )
-    else:
-        intro = "This image is a cropped section of a handwritten form.\n\n"
-    return (
-        intro
-        + "Read the handwritten answer in the image. If a wrong answer was written and then "
-        "crossed out or scribbled over, ignore it and give only the corrected answer written "
-        "afterward. Ignore any dotted or dashed guideline running through the field, and ignore "
-        "the printed question text if any of it appears in the image.\n\n"
-        "Reply with ONLY the answer itself -- no explanation, no repeated question. "
-        "If nothing legible is written, reply with exactly: [illegible]"
-    )
+def _build_prompt(label_context, field_kind=None, style="answer"):
+    return prompts.build_prompt(label_context=label_context, field_kind=field_kind, style=style)
 
 
 def _clean_vlm_text(text):
@@ -77,14 +67,16 @@ def _vlm_read(pil_crop, label_context):
 
     processor, model = _load_vlm()
     device = next(model.parameters()).device
-    prompt = _build_prompt(label_context)
+    field_kind = prompts.infer_field_kind(label_context)
+    prompt = _build_prompt(label_context, field_kind=field_kind)
+    max_new_tokens = VLM_MAX_NEW_TOKENS.get(field_kind, VLM_MAX_NEW_TOKENS_DEFAULT)
     messages = [{"role": "user", "content": [{"type": "image", "image": pil_crop.convert("RGB")}, {"type": "text", "text": prompt}]}]
     chat_text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
     image_inputs, video_inputs = process_vision_info(messages)
     inputs = processor(text=[chat_text], images=image_inputs, videos=video_inputs, padding=True, return_tensors="pt")
     inputs = inputs.to(device)
     with torch.no_grad():
-        generated_ids = model.generate(**inputs, max_new_tokens=32, do_sample=False)
+        generated_ids = model.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=False)
     trimmed = [out[len(inp):] for inp, out in zip(inputs.input_ids, generated_ids)]
     decoded = processor.batch_decode(trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
     return _clean_vlm_text(decoded), 0.0
@@ -344,6 +336,8 @@ def _engine_model_name(engine):
 def _cache_key(file_path, engine):
     stat = Path(file_path).stat()
     raw = f"{file_path}:{stat.st_size}:{stat.st_mtime}:{engine}:{_engine_model_name(engine)}"
+    if engine == "vlm":
+        raw += f":prompt-{prompts.PROMPT_REVISION}"
     return hashlib.sha1(raw.encode()).hexdigest()[:16]
 
 

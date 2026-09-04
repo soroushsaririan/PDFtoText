@@ -24,3 +24,4 @@ python-docx
 pytesseract
 kaggle
 jiwer
+openpyxl
