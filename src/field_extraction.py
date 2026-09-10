@@ -73,7 +73,13 @@ def _clean(text):
 
 def _looks_illegible(text):
     t = text.strip()
-    return (not t) or t in ("[illegible]", "[scratched out]") or t.startswith("[VLM")
+    if (not t) or t in ("[illegible]", "[scratched out]"):
+        return True
+    # Model-loading failures come through as "[vlm unavailable: ...]" /
+    # "[trocr unavailable: ...]" (engine "handwriting_error"); treat those as
+    # illegible rather than letting the error string become the field value.
+    low = t.lower()
+    return low.startswith("[vlm") or "unavailable:" in low
 
 
 def flatten_lines(pages):

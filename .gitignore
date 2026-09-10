@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 .venv/
 .venv-vlm/
+.pytest_cache/
 
 # Generated data / outputs (reproducible via scripts, not source)
 sample_usb/

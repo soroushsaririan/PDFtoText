@@ -106,6 +106,17 @@ combined `outputs/keyword_hits.csv`.
 ./.venv/bin/python src/generate_sample_data.py
 ```
 
+## Running the tests
+
+The tests cover the model-free logic -- file discovery, field extraction,
+prompt building, and report rendering -- so they run in under a second with
+no model download.
+
+```bash
+./.venv/bin/pip install -r requirements-dev.txt   # one-time: installs pytest
+./.venv/bin/pytest
+```
+
 ## Re-installing from scratch
 
 Re-run `./setup.sh` (macOS) or `./setup-linux.sh` (Linux) -- both are safe

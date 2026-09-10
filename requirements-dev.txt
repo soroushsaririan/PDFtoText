@@ -1,0 +1,3 @@
+# Test-only dependencies. The main pipeline does not need these.
+# Install with: ./.venv/bin/pip install -r requirements-dev.txt
+pytest
