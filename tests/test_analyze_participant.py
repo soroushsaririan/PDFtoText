@@ -1,9 +1,20 @@
+import fitz
+
 import analyze_participant as ap
 
 
 def touch(path):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b"%PDF-1.4\n")  # discovery only inspects names/extensions
+
+
+def write_pdf(path, text):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), text)
+    doc.save(str(path))
+    doc.close()
 
 
 class TestDiscoverParticipants:
@@ -80,3 +91,76 @@ class TestDiscoverFiles:
         got = ap.discover_files(d)
         weeks = {w["week"]: w for w in got["weeks"]}
         assert [p.name for p in weeks[1]["files"]] == ["scan.jpg"]
+
+    def test_no_session_marker_pdf_is_kept_out_of_the_real_week_files(self, tmp_path):
+        d = tmp_path / "VPT020"
+        touch(d / "week 1" / "VPT020 No week 1 VPT session.pdf")
+        touch(d / "week 4" / "VPT022 No week4 VPT session.pdf")
+        got = ap.discover_files(d)
+        weeks = {w["week"]: w for w in got["weeks"]}
+        assert weeks[1]["files"] == []
+        assert [p.name for p in weeks[1]["missed_markers"]] == ["VPT020 No week 1 VPT session.pdf"]
+        assert weeks[4]["files"] == []
+        assert weeks[4]["missed_markers"]
+
+    def test_no_session_marker_does_not_shadow_a_real_week_file(self, tmp_path):
+        d = tmp_path / "VPT007"
+        touch(d / "Week 2" / "VPT007 Exercise Log Week 2.pdf")
+        touch(d / "Week 2" / "VPT007 No Week 2 VPT Session.pdf")
+        got = ap.discover_files(d)
+        weeks = {w["week"]: w for w in got["weeks"]}
+        assert [p.name for p in weeks[2]["files"]] == ["VPT007 Exercise Log Week 2.pdf"]
+        assert weeks[2]["missed_markers"]
+
+    def test_empty_no_log_marker_dir_is_surfaced_as_unmatched(self, tmp_path):
+        d = tmp_path / "VPT016"
+        touch(d / "VPT016 CRF visit 1.pdf")
+        (d / "No VPT016 Weekly Exercise Log").mkdir(parents=True)
+        got = ap.discover_files(d)
+        assert got["weeks"] == []
+        assert [p.name for p in got["unmatched"]] == ["No VPT016 Weekly Exercise Log"]
+
+    def test_marker_dir_with_real_files_inside_is_not_treated_as_empty(self, tmp_path):
+        d = tmp_path / "VPT099"
+        touch(d / "No VPT099 Weekly Exercise Log" / "week 1" / "session.pdf")
+        got = ap.discover_files(d)
+        assert got["unmatched"] == []
+        weeks = {w["week"]: w for w in got["weeks"]}
+        assert weeks[1]["files"]
+
+    def test_duplicate_crf_visit_is_deduped_and_the_extra_copy_flagged(self, tmp_path):
+        d = tmp_path / "VPT002"
+        touch(d / "VPT002 CRF visit 3.pdf")
+        touch(d / "VPT002 weekly exercise log" / "VPT002 CRF visit 3.pdf")
+        got = ap.discover_files(d)
+        assert [num for num, _ in got["crf_visits"]] == [3]
+        # the root copy sorts first alphabetically and is the one kept
+        kept_path = got["crf_visits"][0][1]
+        assert kept_path.parent == d
+        assert [p.name for p in got["unmatched"]] == ["VPT002 CRF visit 3.pdf"]
+
+    def test_a_distinctly_named_repeat_visit_is_not_deduped_away(self, tmp_path):
+        # Same visit number, but a different filename means a real second
+        # document (e.g. the visit had to be re-administered), not a copy.
+        d = tmp_path / "VPT018"
+        touch(d / "VPT018 CRF visit 1.pdf")
+        touch(d / "VPT018 CRF visit 1 repeat.pdf")
+        got = ap.discover_files(d)
+        assert sorted(num for num, _ in got["crf_visits"]) == [1, 1]
+        assert got["unmatched"] == []
+
+
+class TestAnalyzeParticipantMissedWeeks:
+    def test_missed_week_note_comes_from_the_marker_pdfs_text(self, tmp_path):
+        d = tmp_path / "VPT020"
+        write_pdf(d / "week 1" / "VPT020 No week 1 VPT session.pdf", "Vpt020 No week 1 session")
+
+        result = ap.analyze_participant(
+            d, image_dir=tmp_path / "img", ocr_cache_dir=tmp_path / "cache", keywords=[],
+        )
+
+        assert len(result["weeks"]) == 1
+        wk = result["weeks"][0]
+        assert wk["status"] == "missed"
+        assert "No week 1 session" in wk["note"]
+        assert wk["fields"] is None
