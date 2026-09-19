@@ -19,6 +19,15 @@ benchmark/prompt_styles.json
 benchmark/prompt_styles.xlsx
 benchmark/prompt_styles_crops/
 
+# Any other run of the same harness (e.g. --out real_ground_truth_sample) --
+# these contain real participant handwriting crops and hand-typed ground
+# truth values and must never be committed.
+benchmark/*.csv
+benchmark/*.json
+benchmark/*.xlsx
+benchmark/*_crops/
+!benchmark/results_*.csv
+
 # macOS
 .DS_Store
 

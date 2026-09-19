@@ -174,7 +174,15 @@ def _load_generator(model_override):
     return generate, VLM_MODEL_NAME
 
 
-def _ground_truth(participant, form, week=None):
+def _ground_truth(participant, form, week=None, base_dir=None):
+    # sample_data_content's fixture participants are literally named VPT001,
+    # VPT002, ... -- the same IDs real study participants use. Only trust it
+    # when we're actually pointed at the generated synthetic sample data;
+    # otherwise this would silently hand back fabricated values (fake
+    # mileage, fake pain scores) for a real participant's real form.
+    if base_dir is None or base_dir.resolve() != (PROJECT_ROOT / "sample_usb").resolve():
+        return {}
+
     try:
         import sample_data_content as sdc
     except ImportError:
@@ -287,7 +295,7 @@ def main():
             tag = f"{form} wk{week}" if week is not None else form
             print(f"  {participant}/{tag}: {pdf_path.name}")
             rows = collect_fields(pdf_path, form, label_set, args.styles, crops_dir, args.limit, week)
-            truth = _ground_truth(participant, form, week)
+            truth = _ground_truth(participant, form, week, base_dir=base_dir)
             truth.setdefault("participant_id", participant)
             for r in rows:
                 r["participant"] = participant
