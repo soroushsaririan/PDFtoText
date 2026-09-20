@@ -27,8 +27,27 @@ CROP_PADDING = 6
 SCRIBBLE_DENSITY_THRESHOLD = 0.16
 SCRIBBLE_FOLLOWUP_WIDTH = 300
 
+# Qwen2.5-VL's processor rounds each image dimension to the nearest 28px
+# patch unit, and only upscales a crop enough to clear its very low minimum
+# total-pixel floor (3136px) -- which a thin single-line form-field crop
+# (44-64px tall) already does on its own. So a crop that short only ever gets
+# ~2 vertical patches to represent the ink, regardless of how legible it is
+# to a human. Ground-truth testing against real forms (benchmark/) showed
+# pre-upscaling short crops before the model sees them raised accuracy on a
+# 44-field real sample from 20% to 32% (net +5), most notably on short
+# single-word/initials fields like "tester".
+VLM_MIN_CROP_HEIGHT = 160
+
 _vlm_processor = None
 _vlm_model = None
+
+
+def _upscale_for_vlm(pil_crop, min_height=VLM_MIN_CROP_HEIGHT):
+    if pil_crop.height >= min_height:
+        return pil_crop
+    scale = min_height / pil_crop.height
+    new_width = max(1, round(pil_crop.width * scale))
+    return pil_crop.resize((new_width, min_height), Image.LANCZOS)
 
 
 def _load_vlm():
@@ -70,7 +89,8 @@ def _vlm_read(pil_crop, label_context):
     field_kind = prompts.infer_field_kind(label_context)
     prompt = _build_prompt(label_context, field_kind=field_kind)
     max_new_tokens = VLM_MAX_NEW_TOKENS.get(field_kind, VLM_MAX_NEW_TOKENS_DEFAULT)
-    messages = [{"role": "user", "content": [{"type": "image", "image": pil_crop.convert("RGB")}, {"type": "text", "text": prompt}]}]
+    pil_crop = _upscale_for_vlm(pil_crop.convert("RGB"))
+    messages = [{"role": "user", "content": [{"type": "image", "image": pil_crop}, {"type": "text", "text": prompt}]}]
     chat_text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
     image_inputs, video_inputs = process_vision_info(messages)
     inputs = processor(text=[chat_text], images=image_inputs, videos=video_inputs, padding=True, return_tensors="pt")
