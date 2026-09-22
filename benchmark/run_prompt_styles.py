@@ -30,6 +30,7 @@ from field_extraction import (
 )
 from ocr_pipeline import (
     CROP_PADDING,
+    RENDER_ZOOM,
     VLM_MAX_NEW_TOKENS,
     VLM_MAX_NEW_TOKENS_DEFAULT,
     render_file_to_images,
@@ -246,8 +247,8 @@ def _ground_truth(participant, form, week=None, base_dir=None):
     return {k: v for k, v in entry.get("exit", {}).items()}
 
 
-def collect_fields(pdf_path, form, label_set, styles, out_crops, limit, week):
-    pages = render_file_to_images(pdf_path, out_crops / "pages" / pdf_path.stem)
+def collect_fields(pdf_path, form, label_set, styles, out_crops, limit, week, zoom=RENDER_ZOOM):
+    pages = render_file_to_images(pdf_path, out_crops / "pages" / pdf_path.stem, zoom=zoom)
     rows = []
     crops_seen = 0
     for page_no, img_path in enumerate(pages, start=1):
@@ -304,6 +305,8 @@ def main():
     parser.add_argument("--max-new-tokens", type=int, default=None, help="Force a token budget for every style.")
     parser.add_argument("--out", default=str(BENCH_DIR / "prompt_styles"), help="Output path stem.")
     parser.add_argument("--dry-run", action="store_true", help="Build prompts and crops, skip the model.")
+    parser.add_argument("--zoom", type=float, default=RENDER_ZOOM,
+                         help=f"PDF render resolution multiplier before cropping (default {RENDER_ZOOM}, matches production).")
     args = parser.parse_args()
 
     base_dir = Path(args.base_dir)
@@ -333,7 +336,7 @@ def main():
                 continue
             tag = f"{form} wk{week}" if week is not None else form
             print(f"  {participant}/{tag}: {pdf_path.name}")
-            rows = collect_fields(pdf_path, form, label_set, args.styles, crops_dir, args.limit, week)
+            rows = collect_fields(pdf_path, form, label_set, args.styles, crops_dir, args.limit, week, zoom=args.zoom)
             truth = _ground_truth(participant, form, week, base_dir=base_dir)
             truth.setdefault("participant_id", participant)
             for r in rows:
