@@ -24,6 +24,7 @@ extract_value() pulls just that line out before comparing to ground truth
 import argparse
 import re
 import sys
+from collections import Counter
 from pathlib import Path
 
 import pandas as pd
@@ -92,6 +93,55 @@ def extract_value(raw_text, field_kind, style):
     return None  # style didn't follow the numbered format -- couldn't find the field
 
 
+def _load_sampling_generator(temperature):
+    """Like run_prompt_styles._load_generator, but do_sample=True so repeated
+    calls on the same image/prompt can actually disagree -- needed for
+    self-consistency (majority-vote across N samples); the normal generator
+    is greedy (do_sample=False), so calling it twice always gives the same
+    answer and there'd be nothing to vote on."""
+    import torch
+    from qwen_vl_utils import process_vision_info
+
+    from ocr_pipeline import VLM_MODEL_NAME, _load_vlm
+
+    processor, model = _load_vlm()
+    device = next(model.parameters()).device
+
+    def generate(crop, prompt, max_new_tokens):
+        messages = [{"role": "user", "content": [
+            {"type": "image", "image": crop.convert("RGB")},
+            {"type": "text", "text": prompt},
+        ]}]
+        chat_text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        image_inputs, video_inputs = process_vision_info(messages)
+        inputs = processor(text=[chat_text], images=image_inputs, videos=video_inputs,
+                            padding=True, return_tensors="pt").to(device)
+        with torch.no_grad():
+            generated_ids = model.generate(**inputs, max_new_tokens=max_new_tokens,
+                                            do_sample=True, temperature=temperature, top_p=0.9)
+        trimmed = [out[len(inp):] for inp, out in zip(inputs.input_ids, generated_ids)]
+        decoded = processor.batch_decode(trimmed, skip_special_tokens=True,
+                                          clean_up_tokenization_spaces=False)[0]
+        return decoded.strip()
+
+    return generate, VLM_MODEL_NAME
+
+
+def majority_vote(values):
+    """Most common normalized value across samples; ties broken by the
+    first-seen value among the tied ones (stable, not arbitrary)."""
+    normed = [normalize(v) for v in values]
+    counts = Counter(normed)
+    best_count = max(counts.values())
+    winners = [n for n in normed if counts[n] == best_count]
+    winner_normed = winners[0]
+    # return the first raw value whose normalized form matches the winner
+    for v, n in zip(values, normed):
+        if n == winner_normed:
+            return v
+    return values[0]
+
+
 def normalize(value):
     text = str(value).strip().strip("\"'").lower()
     text = re.sub(r"\s+", " ", text)
@@ -103,8 +153,8 @@ def normalize(value):
     return text
 
 
-def run_one(df, engine, style, filt, min_height, generate, verbose=True):
-    results, extracted = [], []
+def run_one(df, engine, style, filt, min_height, generate, verbose=True, samples=1):
+    results, extracted, all_samples = [], [], []
     for i, row in df.iterrows():
         crop_path = BENCH_DIR / row["crop"]
         crop = Image.open(crop_path).convert("RGB")
@@ -113,19 +163,28 @@ def run_one(df, engine, style, filt, min_height, generate, verbose=True):
         budget = STRUCTURED_MAX_NEW_TOKENS if style != "answer" else \
             VLM_MAX_NEW_TOKENS.get(row["field_kind"], VLM_MAX_NEW_TOKENS_DEFAULT)
         prompt = prompts.build_prompt(label_context=row["label"], field_kind=row["field_kind"], style=style)
-        try:
-            raw = generate(crop, prompt, budget)
-        except Exception as exc:
-            raw = f"[ERROR: {exc}]"
-        value = extract_value(raw, row["field_kind"], style)
-        results.append(raw)
+
+        sample_values = []
+        raw = None
+        for _ in range(samples):
+            try:
+                raw = generate(crop, prompt, budget)
+            except Exception as exc:
+                raw = f"[ERROR: {exc}]"
+            sample_values.append(extract_value(raw, row["field_kind"], style))
+
+        value = majority_vote(sample_values) if samples > 1 else sample_values[0]
+        results.append(raw if samples == 1 else " | ".join(str(v) for v in sample_values))
         extracted.append(value)
+        all_samples.append(sample_values)
         if verbose:
-            shown = value if style != "answer" else raw
-            print(f"  {i + 1}/{len(df)}  {row['participant']}/{row['field_key']}: {shown!r}", flush=True)
+            shown = value if samples == 1 else f"{value!r} (votes: {sample_values})"
+            print(f"  {i + 1}/{len(df)}  {row['participant']}/{row['field_key']}: {shown}", flush=True)
 
     out = df.copy()
     out["raw_result"] = results
+    if samples > 1:
+        out["samples"] = [" | ".join(str(v) for v in s) for s in all_samples]
     out["result"] = extracted
     out["match"] = [normalize(g) == normalize(r) for g, r in zip(out["ground_truth"], out["result"])]
     return out
@@ -154,6 +213,11 @@ def main():
     parser.add_argument("--limit", type=int, default=0,
                          help="Only score the first N rows (0 = all 44) -- for a quick timing/directional "
                               "read before committing to a slow style like discriminative/paired.")
+    parser.add_argument("--samples", type=int, default=1,
+                         help="Self-consistency: sample the model N times per field (do_sample=True) and take "
+                              "the majority-vote answer, instead of one greedy (do_sample=False) call.")
+    parser.add_argument("--temperature", type=float, default=0.7,
+                         help="Sampling temperature, only used when --samples > 1.")
     args = parser.parse_args()
 
     if not SRC_PATH.exists():
@@ -171,7 +235,10 @@ def main():
 
     print("Loading the model (first run downloads it) ...")
     if args.engine == "vlm":
-        generate, model_name = _load_generator(None)
+        if args.samples > 1:
+            generate, model_name = _load_sampling_generator(args.temperature)
+        else:
+            generate, model_name = _load_generator(None)
     else:
         model_name = "microsoft/trocr-base-handwritten"
 
@@ -181,12 +248,16 @@ def main():
     print(f"Model: {model_name}\n")
 
     if not args.sweep:
-        print(f"Engine: {args.engine}  Style: {args.style}  Filter: {args.filter}")
-        scored = run_one(df, args.engine, args.style, args.filter, args.min_height, generate)
+        tag = f"Engine: {args.engine}  Style: {args.style}  Filter: {args.filter}"
+        if args.samples > 1:
+            tag += f"  Samples: {args.samples} (T={args.temperature})"
+        print(tag)
+        scored = run_one(df, args.engine, args.style, args.filter, args.min_height, generate, samples=args.samples)
         summarize("\nOverall", scored)
         print("\nBy field kind:")
         print(scored.groupby("field_kind")["match"].agg(["sum", "count"]).to_string())
-        out_path = BENCH_DIR / f"real_ground_truth_sample_scored_{args.engine}_{args.style}_{args.filter}.xlsx"
+        suffix = f"_x{args.samples}" if args.samples > 1 else ""
+        out_path = BENCH_DIR / f"real_ground_truth_sample_scored_{args.engine}_{args.style}_{args.filter}{suffix}.xlsx"
         scored.to_excel(out_path, index=False)
         print(f"\nScored sheet: {out_path}")
         return
