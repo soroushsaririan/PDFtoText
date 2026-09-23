@@ -9,7 +9,7 @@ FIELD_KINDS = ("answer", "number", "pain", "yesno", "text", "notes", "checkbox")
 PROMPT_STYLES = ("answer", "descriptive", "discriminative", "paired")
 
 # Feeds the OCR cache key; bump when the prompt text below changes.
-PROMPT_REVISION = "p1"
+PROMPT_REVISION = "p2"
 
 EXERCISE_OPTIONS = [
     "Hip Strength", "Foot Strength", "Core Strength", "Plyometric",
@@ -112,7 +112,7 @@ _FIELDS = {
     "text": [
         "1. FIELD LEGIBLE: Yes / Partially / No",
         "2. CORRECTION PRESENT: Yes / No / Uncertain",
-        "3. TEXT AS WRITTEN: verbatim transcription, or [illegible]",
+        "3. TEXT AS WRITTEN: the exact text as written, character for character, or [illegible]",
         "4. UNCERTAIN CHARACTERS: characters you are unsure of, or None",
         "5. VISUAL EVIDENCE: the strokes this is based on, in one line",
     ],
