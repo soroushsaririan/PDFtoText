@@ -24,6 +24,7 @@ extract_value() pulls just that line out before comparing to ground truth
 import argparse
 import re
 import sys
+import tempfile
 from collections import Counter
 from pathlib import Path
 
@@ -65,6 +66,33 @@ DISCRIMINATIVE_VALUE_FIELD = {
 STRUCTURED_MAX_NEW_TOKENS = 400
 
 FILTERS = ("none", "autocontrast", "contrast", "sharpen")
+
+MLX_MODEL_NAME = "mlx-community/Qwen2.5-VL-7B-Instruct-4bit"
+
+
+def _load_mlx_generator(model_name=MLX_MODEL_NAME):
+    """Apple-Silicon-native 4-bit-quantized 7B, via the MLX framework rather
+    than transformers/torch -- a full-precision 7B (~14GB) doesn't fit
+    comfortably in 16GB unified memory, but this quantizes down to ~4.5GB.
+
+    generate()'s image= wiring only produces real output when the prompt has
+    already been through apply_chat_template(..., num_images=1) -- skipping
+    that step silently drops the image and the model just asks to see one."""
+    from mlx_vlm import generate as mlx_generate
+    from mlx_vlm import load as mlx_load
+    from mlx_vlm.prompt_utils import apply_chat_template as mlx_apply_chat_template
+
+    model, processor = mlx_load(model_name)
+
+    def generate(crop, prompt, max_new_tokens):
+        templated = mlx_apply_chat_template(processor, model.config, prompt, num_images=1)
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=True) as f:
+            crop.convert("RGB").save(f.name)
+            result = mlx_generate(model, processor, templated, image=f.name,
+                                   max_tokens=max_new_tokens, temperature=0.0, verbose=False)
+        return result.text.strip()
+
+    return generate, model_name
 
 
 def apply_filter(crop, name):
@@ -202,8 +230,9 @@ def summarize(label, scored):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--engine", choices=("vlm", "trocr"), default="vlm",
-                         help="Handwriting engine to score: 'vlm' (Qwen2.5-VL, default) or 'trocr'.")
+    parser.add_argument("--engine", choices=("vlm", "trocr", "mlx"), default="vlm",
+                         help="Handwriting engine to score: 'vlm' (Qwen2.5-VL-3B, default), 'trocr', "
+                              "or 'mlx' (Qwen2.5-VL-7B-Instruct-4bit via MLX, Apple Silicon only).")
     parser.add_argument("--style", choices=prompts.PROMPT_STYLES, default="answer",
                          help="Prompt style (ignored for --engine trocr, which takes no prompt).")
     parser.add_argument("--filter", choices=FILTERS, default="none",
@@ -243,6 +272,8 @@ def main():
             generate, model_name = _load_sampling_generator(args.temperature)
         else:
             generate, model_name = _load_generator(None)
+    elif args.engine == "mlx":
+        generate, model_name = _load_mlx_generator()
     else:
         model_name = "microsoft/trocr-base-handwritten"
 
