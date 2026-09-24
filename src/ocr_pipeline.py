@@ -80,6 +80,21 @@ def _clean_vlm_text(text):
     return re.sub(r"\s+", " ", text)
 
 
+def _release_vlm_memory():
+    """MPS's (and CUDA's) caching allocator holds freed GPU memory for reuse
+    rather than returning it to the OS. Across many inference calls with
+    varying image/prompt shapes (a real handwriting run processes hundreds of
+    differently-sized crops), the pool can grow essentially without bound
+    instead of reaching a steady state -- observed ballooning to 20+ GB
+    resident on a 16 GB machine during a long benchmark loop. Call this after
+    every generate() call, not just at the end of a run."""
+    import torch
+    if torch.backends.mps.is_available():
+        torch.mps.empty_cache()
+    elif torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
 def _vlm_read(pil_crop, label_context):
     import torch
     from qwen_vl_utils import process_vision_info
@@ -95,10 +110,14 @@ def _vlm_read(pil_crop, label_context):
     image_inputs, video_inputs = process_vision_info(messages)
     inputs = processor(text=[chat_text], images=image_inputs, videos=video_inputs, padding=True, return_tensors="pt")
     inputs = inputs.to(device)
-    with torch.no_grad():
-        generated_ids = model.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=False)
-    trimmed = [out[len(inp):] for inp, out in zip(inputs.input_ids, generated_ids)]
-    decoded = processor.batch_decode(trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
+    try:
+        with torch.no_grad():
+            generated_ids = model.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=False)
+        trimmed = [out[len(inp):] for inp, out in zip(inputs.input_ids, generated_ids)]
+        decoded = processor.batch_decode(trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
+    finally:
+        del inputs
+        _release_vlm_memory()
     return _clean_vlm_text(decoded), 0.0
 
 

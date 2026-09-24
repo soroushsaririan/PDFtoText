@@ -25,3 +25,10 @@ class TestUpscaleForVlm:
         out = ocr._upscale_for_vlm(img, min_height=40)
         assert out.height == 40
         assert out.width == 200
+
+
+class TestReleaseVlmMemory:
+    def test_runs_without_error_regardless_of_device(self):
+        # No MPS/CUDA on the test machine is a valid case too -- this must
+        # never raise, since _vlm_read() calls it after every single field.
+        ocr._release_vlm_memory()
