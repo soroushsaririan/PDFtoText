@@ -98,10 +98,25 @@ def _norm(text):
     return re.sub(r"[^a-z0-9]", "", text.lower())
 
 
+LOW_CONF_LABEL_TOKEN = 50
+
+
 def _label_hits(data, lines, label):
     """(box, line_key) for the printed label words, dropping the dotted
     guideline tesseract merges in. line_key lets the caller check what else
-    is printed further along the same physical line (see _next_label_start_x)."""
+    is printed further along the same physical line (see _next_label_start_x).
+
+    A printed label sitting right up against the handwritten answer (no gap)
+    sometimes gets OCR'd as ONE token spanning both, e.g. "ID:_/P" at 38%
+    confidence for "Participant ID:" immediately followed by a handwritten
+    "VPT020" -- the real printed text is just "ID:", but the token's measured
+    box also covers the first stroke or two of the handwriting. Trusting that
+    token's right edge pushed the label box (and therefore the answer crop
+    that starts just after it) past the "V" and "P", clipping them from the
+    saved crop entirely. So: for any token below LOW_CONF_LABEL_TOKEN, use its
+    LEFT edge rather than its right edge when computing the box's rightmost
+    extent -- a real printed word is normally high-confidence, so a low score
+    is itself the signal that the token's width can't be trusted."""
     want = _norm(label)
     if len(want) < 6:
         return []
@@ -119,7 +134,9 @@ def _label_hits(data, lines, label):
             if want in running:
                 xs = [data["left"][j] for j in covered]
                 ys = [data["top"][j] for j in covered]
-                xe = [data["left"][j] + data["width"][j] for j in covered]
+                xe = [data["left"][j] + data["width"][j]
+                      if float(data["conf"][j]) >= LOW_CONF_LABEL_TOKEN else data["left"][j]
+                      for j in covered]
                 ye = [data["top"][j] + data["height"][j] for j in covered]
                 hits.append(((min(xs), min(ys), max(xe), max(ye)), line_key))
                 break
