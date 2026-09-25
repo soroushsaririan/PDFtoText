@@ -36,10 +36,14 @@ IMG_MAX_W = 560     # native size rather than over-compressing wide crops down t
 SAMPLE_SIZE = 5     # one field per participant, same fields on both style sheets
 
 
-def add_methodology_sheet(wb):
+def add_methodology_sheet(wb, style_accuracy):
     ws = wb.active
     ws.title = "Methodology"
     ws.column_dimensions["A"].width = 100
+    results_lines = [
+        (f"{title}: {correct} of {total} correct ({correct / total:.0%}).", False)
+        for title, correct, total in style_accuracy
+    ]
     lines = [
         ("Model and setup", True),
         ("Qwen2.5-VL-7B-Instruct-4bit, run locally via Apple's MLX framework "
@@ -84,8 +88,7 @@ def add_methodology_sheet(wb):
          "sometimes was.", False),
         ("", False),
         ("Results", True),
-        ("Answer style: 27 of 44 correct (61%).", False),
-        ("Discriminative style: 26 of 44 correct (59%).", False),
+        *results_lines,
         ("See the two results sheets for the field-by-field detail behind "
          "those numbers, including the original crop image for each field.", False),
     ]
@@ -167,17 +170,20 @@ def pick_sample_crops(df, n):
 
 
 def main():
-    wb = Workbook()
-    add_methodology_sheet(wb)
-
-    base_df = pd.read_excel(SOURCES[0][1])
-    sample_crops = pick_sample_crops(base_df, SAMPLE_SIZE)
-
-    for title, path in SOURCES:
+    for _, path in SOURCES:
         if not path.exists():
             print(f"Missing: {path}")
             sys.exit(1)
-        df = pd.read_excel(path)
+
+    full_dfs = [pd.read_excel(path) for _, path in SOURCES]
+    style_accuracy = [(title, int(df["match"].sum()), len(df))
+                       for (title, _), df in zip(SOURCES, full_dfs)]
+
+    wb = Workbook()
+    add_methodology_sheet(wb, style_accuracy)
+
+    sample_crops = pick_sample_crops(full_dfs[0], SAMPLE_SIZE)
+    for (title, _), df in zip(SOURCES, full_dfs):
         df = df[df["crop"].isin(sample_crops)].reset_index(drop=True)
         add_results_sheet(wb, title, df)
         print(f"Added sheet '{title}': {len(df)} rows")
