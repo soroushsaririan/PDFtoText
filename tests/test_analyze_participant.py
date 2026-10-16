@@ -172,3 +172,34 @@ class TestAnalyzeParticipantMissedWeeks:
         assert wk["status"] == "missed"
         assert "No week 1 session" in wk["note"]
         assert wk["fields"] is None
+
+
+class TestWeeklyDuplicateFiles:
+    """The same weekly scan sometimes arrives twice under different names --
+    a phone photo plus a copy renamed ".pdf" (VPT014)."""
+
+    def test_byte_identical_weekly_copies_are_ocrd_once(self, tmp_path):
+        d = tmp_path / "VPT014"
+        photo = d / "weekly log" / "Exercise Log week 1.JPG"
+        renamed = d / "weekly log" / "Exercise Log week 1 .pdf"
+        photo.parent.mkdir(parents=True, exist_ok=True)
+        photo.write_bytes(b"\xff\xd8\xff\xe0 the same scan")
+        renamed.write_bytes(b"\xff\xd8\xff\xe0 the same scan")
+
+        got = ap.discover_files(d)
+
+        assert [p.name for p in got["weeks"][0]["files"]] == ["Exercise Log week 1 .pdf"]
+        assert [p.name for p in got["unmatched"]] == ["Exercise Log week 1.JPG"]
+
+    def test_different_scans_for_one_week_are_both_kept(self, tmp_path):
+        d = tmp_path / "VPT014"
+        front = d / "weekly log" / "Exercise Log week 1 page 1.pdf"
+        back = d / "weekly log" / "Exercise Log week 1 page 2.pdf"
+        front.parent.mkdir(parents=True, exist_ok=True)
+        front.write_bytes(b"%PDF-1.4 front side")
+        back.write_bytes(b"%PDF-1.4 back side")
+
+        got = ap.discover_files(d)
+
+        assert len(got["weeks"][0]["files"]) == 2
+        assert got["unmatched"] == []

@@ -8,9 +8,14 @@ from pathlib import Path
 
 import fitz
 import numpy as np
+import pillow_heif
 import pytesseract
 from PIL import Image
 from pytesseract import Output
+
+# Phone photos of the paper forms are often HEIC; without this PIL can't
+# open them at all.
+pillow_heif.register_heif_opener()
 
 import consensus
 import field_reader
@@ -238,7 +243,27 @@ class PageResult:
         return "\n".join(l.text for l in self.lines if l.text)
 
 
-IMAGE_EXTS = {".jpg", ".jpeg", ".png"}
+IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".heic", ".heif"}
+
+
+class UnreadableFile(Exception):
+    """A form file that can't be rendered at all -- unsupported format, or
+    truncated. Raised so one bad file can be reported and skipped instead of
+    taking the whole run down with it."""
+
+
+def looks_like_pdf(path):
+    """Whether the file really is a PDF, by signature rather than extension.
+
+    Some forms reach us as a phone photo copy-renamed to ".pdf" (VPT014's
+    weekly logs are JPEG and HEIC). Trusting the extension sends those to the
+    PDF renderer, where a JPEG happens to open and a HEIC raises.
+    """
+    try:
+        with open(path, "rb") as fh:
+            return fh.read(5) == b"%PDF-"
+    except OSError:
+        return False
 
 
 def render_pdf_to_images(pdf_path, image_dir, zoom=RENDER_ZOOM):
@@ -258,14 +283,23 @@ def render_pdf_to_images(pdf_path, image_dir, zoom=RENDER_ZOOM):
 
 
 def render_file_to_images(file_path, image_dir, zoom=RENDER_ZOOM):
+    """Render one form file to page PNGs, dispatching on what the file
+    actually is rather than on its extension."""
     file_path = Path(file_path)
-    if file_path.suffix.lower() in IMAGE_EXTS:
+    as_pdf = looks_like_pdf(file_path) if file_path.suffix.lower() == ".pdf" \
+        else file_path.suffix.lower() not in IMAGE_EXTS
+    try:
+        if as_pdf:
+            return render_pdf_to_images(file_path, image_dir, zoom=zoom)
         image_dir = Path(image_dir)
         image_dir.mkdir(parents=True, exist_ok=True)
         out_path = image_dir / "page_01.png"
         Image.open(file_path).convert("RGB").save(out_path)
         return [out_path]
-    return render_pdf_to_images(file_path, image_dir, zoom=zoom)
+    except UnreadableFile:
+        raise
+    except Exception as exc:
+        raise UnreadableFile(f"{file_path.name}: {type(exc).__name__}: {exc}") from exc
 
 
 def _find_yes_no(words):

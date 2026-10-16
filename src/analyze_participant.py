@@ -1,3 +1,4 @@
+import hashlib
 import re
 from collections import defaultdict
 from pathlib import Path
@@ -6,7 +7,7 @@ import fitz
 from docx import Document
 
 import field_extraction as fx
-from ocr_pipeline import run_ocr_on_file, full_text
+from ocr_pipeline import UnreadableFile, run_ocr_on_file, full_text
 
 CRF_RE = re.compile(r"crf\s*visit\s*(\d+)", re.I)
 EXIT_RE = re.compile(r"\bexit\b", re.I)
@@ -87,6 +88,19 @@ def _walk_relevant_files(participant_dir):
             yield path
 
 
+def _content_digest(path, chunk=1 << 20):
+    """SHA-256 of a file's bytes, or None if it can't be read -- an
+    unreadable file is never treated as a duplicate of anything."""
+    digest = hashlib.sha256()
+    try:
+        with open(path, "rb") as fh:
+            for block in iter(lambda: fh.read(chunk), b""):
+                digest.update(block)
+    except OSError:
+        return None
+    return digest.hexdigest()
+
+
 def discover_files(participant_dir):
     participant_dir = Path(participant_dir)
 
@@ -154,12 +168,24 @@ def discover_files(participant_dir):
 
     unmatched.extend(_find_empty_marker_dirs(participant_dir))
 
+    # The same weekly scan is sometimes filed twice under different names --
+    # VPT014's logs are a phone photo plus a byte-identical copy renamed
+    # ".pdf". OCRing both would feed the same answers through field
+    # extraction twice, so keep the first copy and surface the rest.
     week_nums = sorted(set(week_files) | set(week_notes) | set(week_missed_markers))
     weeks = []
     for wn in week_nums:
+        kept, seen_digests = [], set()
+        for path in sorted(week_files.get(wn, [])):
+            digest = _content_digest(path)
+            if digest is not None and digest in seen_digests:
+                unmatched.append(path)
+                continue
+            seen_digests.add(digest)
+            kept.append(path)
         weeks.append({
             "week": wn,
-            "files": sorted(week_files.get(wn, [])),
+            "files": kept,
             "notes": sorted(week_notes.get(wn, [])),
             "missed_markers": sorted(week_missed_markers.get(wn, [])),
         })
@@ -186,10 +212,18 @@ def analyze_participant(participant_dir, image_dir, ocr_cache_dir, keywords, use
     }
 
     def ocr_one(path):
-        return run_ocr_on_file(
-            path, image_dir=image_dir, ocr_cache_dir=ocr_cache_dir, use_vlm=use_vlm, force=force, engine=engine,
-            passes=passes,
-        )
+        """Pages of one form file, or no pages at all if it can't be read --
+        a single unreadable file is reported under "Files Not Processed"
+        rather than ending the whole run."""
+        try:
+            return run_ocr_on_file(
+                path, image_dir=image_dir, ocr_cache_dir=ocr_cache_dir, use_vlm=use_vlm, force=force, engine=engine,
+                passes=passes,
+            )
+        except UnreadableFile as exc:
+            rel = path.relative_to(participant_dir)
+            result["unmatched_files"].append(f"{rel} -- unreadable: {exc}")
+            return []
 
     def queue_review(pages, label_set, source, form, week=None):
         for key, entry in fx.field_review(pages, label_set).items():
@@ -203,6 +237,8 @@ def analyze_participant(participant_dir, image_dir, ocr_cache_dir, keywords, use
 
     for visit_num, path in files["crf_visits"]:
         pages = ocr_one(path)
+        if not pages:
+            continue
         text = full_text(pages)
         result["keyword_hits"] += [dict(h, source=path.name) for h in fx.keyword_search(text, keywords)]
         if visit_num == 1:
@@ -221,11 +257,12 @@ def analyze_participant(participant_dir, image_dir, ocr_cache_dir, keywords, use
     if files["exit_survey"] is not None:
         path = files["exit_survey"]
         pages = ocr_one(path)
-        text = full_text(pages)
-        result["keyword_hits"] += [dict(h, source=path.name) for h in fx.keyword_search(text, keywords)]
-        fields, raw = fx.extract_exit_record(pages)
-        queue_review(pages, fx.EXIT_LABELS, path.name, "exit survey")
-        result["exit"] = {"file": path.name, "fields": fields}
+        if pages:
+            text = full_text(pages)
+            result["keyword_hits"] += [dict(h, source=path.name) for h in fx.keyword_search(text, keywords)]
+            fields, raw = fx.extract_exit_record(pages)
+            queue_review(pages, fx.EXIT_LABELS, path.name, "exit survey")
+            result["exit"] = {"file": path.name, "fields": fields}
 
     for wk in files["weeks"]:
         missed_sources = wk["notes"] + wk["missed_markers"]
@@ -241,8 +278,12 @@ def analyze_participant(participant_dir, image_dir, ocr_cache_dir, keywords, use
             result["weeks"].append({"week": wk["week"], "status": "no_file_found", "note": None, "fields": None})
             continue
         pages = ocr_many(wk["files"])
-        text = full_text(pages)
         file_names = ", ".join(p.name for p in wk["files"])
+        if not pages:
+            result["weeks"].append({"week": wk["week"], "status": "unreadable", "note": None,
+                                    "fields": None, "file": file_names})
+            continue
+        text = full_text(pages)
         result["keyword_hits"] += [dict(h, source=file_names) for h in fx.keyword_search(text, keywords)]
         fields, raw = fx.extract_weekly_record(pages)
         queue_review(pages, fx.WEEKLY_LABELS, file_names, "weekly", week=wk["week"])

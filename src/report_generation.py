@@ -40,6 +40,9 @@ def render_participant_report(result, keywords_configured):
         if wk["status"] == "no_file_found":
             lines.append(f"| {wk['week']} | no file found | - | - | - | - | - | - | - | - |")
             continue
+        if wk["status"] == "unreadable":
+            lines.append(f"| {wk['week']} | unreadable | - | - | - | - | - | - | - | - |")
+            continue
         f = wk["fields"]
         lines.append(
             f"| {wk['week']} | completed | {_fmt(f.get('days_exercised'))} | "
@@ -57,6 +60,9 @@ def render_participant_report(result, keywords_configured):
             continue
         if wk["status"] == "no_file_found":
             lines.append("- No PDF or missed-session note found for this week.")
+            continue
+        if wk["status"] == "unreadable":
+            lines.append(f"- Found {wk['file']}, but it could not be read -- see \"Files Not Processed\".")
             continue
         f = wk["fields"]
         lines.append(f"- Exercise types checked: {', '.join(f.get('exercise_types') or []) or NOT_DOCUMENTED}")

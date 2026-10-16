@@ -1,3 +1,5 @@
+import fitz
+import pytest
 from PIL import Image
 
 import ocr_pipeline as ocr
@@ -82,3 +84,61 @@ class TestReadLabelFields:
         reads = ocr.read_label_fields(page, tmp_path, passes=1, generate=broken)
         assert reads[0].status == "illegible"
         assert reads[0].readings[0][2].startswith("[error")
+
+
+class TestLooksLikePdf:
+    def test_a_real_pdf_is_recognized(self, tmp_path):
+        p = tmp_path / "form.pdf"
+        p.write_bytes(b"%PDF-1.7\nrest of the file")
+        assert ocr.looks_like_pdf(p) is True
+
+    def test_a_jpeg_renamed_to_pdf_is_not(self, tmp_path):
+        p = tmp_path / "form.pdf"
+        p.write_bytes(b"\xff\xd8\xff\xe0\x00\x10JFIF")
+        assert ocr.looks_like_pdf(p) is False
+
+    def test_a_missing_file_is_not(self, tmp_path):
+        assert ocr.looks_like_pdf(tmp_path / "nope.pdf") is False
+
+
+class TestRenderFileToImages:
+    """Form files are dispatched on their actual format: study staff hand us
+    phone photos copy-renamed to ".pdf"."""
+
+    def test_a_jpeg_renamed_to_pdf_is_rendered_as_an_image(self, tmp_path):
+        src = tmp_path / "Exercise Log week 1 .pdf"
+        Image.new("RGB", (120, 80), "white").save(src, format="JPEG")
+
+        got = ocr.render_file_to_images(src, tmp_path / "out")
+
+        assert [p.name for p in got] == ["page_01.png"]
+        assert Image.open(got[0]).size == (120, 80)
+
+    def test_a_heic_renamed_to_pdf_is_rendered_as_an_image(self, tmp_path):
+        src = tmp_path / "Exercise Log week 3 .pdf"
+        Image.new("RGB", (64, 48), "white").save(src, format="HEIF")
+
+        got = ocr.render_file_to_images(src, tmp_path / "out")
+
+        assert Image.open(got[0]).size == (64, 48)
+
+    def test_an_unreadable_file_raises_unreadable_file(self, tmp_path):
+        src = tmp_path / "truncated.pdf"
+        src.write_bytes(b"%PDF-1.4\nnot really a pdf at all")
+
+        with pytest.raises(ocr.UnreadableFile) as caught:
+            ocr.render_file_to_images(src, tmp_path / "out")
+
+        assert "truncated.pdf" in str(caught.value)
+
+    def test_a_real_pdf_still_goes_through_the_pdf_renderer(self, tmp_path):
+        src = tmp_path / "form.pdf"
+        doc = fitz.open()
+        doc.new_page()
+        doc.new_page()
+        doc.save(str(src))
+        doc.close()
+
+        got = ocr.render_file_to_images(src, tmp_path / "out")
+
+        assert [p.name for p in got] == ["page_01.png", "page_02.png"]

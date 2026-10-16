@@ -17,6 +17,8 @@ accelerate
 qwen-vl-utils
 pymupdf
 pillow
+# Phone photos of the forms are often HEIC, which pillow can't read alone.
+pillow-heif
 numpy
 pandas
 reportlab

@@ -92,6 +92,18 @@ class TestRenderParticipantReport:
         assert "| 3 | no file found |" in md
         assert "Note: was sick" in md
 
+    def test_an_unreadable_week_renders_a_placeholder_row(self):
+        result = _minimal_result(
+            weeks=[
+                {"week": 3, "status": "unreadable", "note": None, "fields": None,
+                 "file": "Exercise Log week 3 .pdf"},
+            ]
+        )
+        md = rg.render_participant_report(result, keywords_configured=True)
+        assert "| 3 | unreadable |" in md
+        assert "Exercise Log week 3 .pdf" in md
+        assert "Files Not Processed" in md
+
     def test_keyword_hits_render_as_a_table(self):
         result = _minimal_result(
             keyword_hits=[{"keyword": "pain", "source": "wk1.pdf", "context": "sharp pain today"}]
