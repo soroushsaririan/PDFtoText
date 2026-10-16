@@ -32,6 +32,7 @@ sys.path.insert(0, str(BENCH_DIR))
 
 import prompts  # noqa: E402
 from field_extraction import FINAL_LABELS, INTAKE_LABELS, WEEKLY_LABELS  # noqa: E402
+from ocr_pipeline import UnreadableFile  # noqa: E402
 from field_reader import (  # noqa: E402
     answer_crop,
     field_kind_for,
@@ -46,6 +47,10 @@ from run_prompt_styles import resolve_jobs  # noqa: E402
 
 SHEET_PATH = BENCH_DIR / "real_ground_truth_sample.xlsx"
 
+# The fields batches 1 and 2 sampled. These were the only labels that
+# actually matched the printed forms at the time, so they are the only
+# fields with any measured accuracy; --fields all (or an explicit list)
+# samples the rest, which have never been scored against ground truth.
 FIELDS_BY_FORM = {
     "weekly": ("weekly_visit", "participant_id", "pain_now", "mileage"),
     "final": ("pain_now",),
@@ -67,8 +72,8 @@ def _context_crop(page_image, label_box, max_x1):
     ))
 
 
-def collect(participant, pdf_path, form, week, crops_dir):
-    wanted = FIELDS_BY_FORM[form]
+def collect(participant, pdf_path, form, week, crops_dir, fields_by_form=None):
+    wanted = (fields_by_form or FIELDS_BY_FORM)[form]
     label_set = [t for t in LABEL_SETS[form] if t[1] in wanted]
     pages = render_file_to_images(pdf_path, crops_dir / "pages" / pdf_path.stem)
     found = []
@@ -107,7 +112,7 @@ def collect(participant, pdf_path, form, week, crops_dir):
     return found
 
 
-def participant_rows(participant_dir, crops_dir):
+def participant_rows(participant_dir, crops_dir, fields_by_form=None):
     jobs = resolve_jobs(participant_dir, ["weekly", "intake", "final"])
     weekly = sorted([j for j in jobs if j[0] == "weekly"], key=lambda j: -j[3])
     final = [j for j in jobs if j[0] == "final"]
@@ -116,10 +121,10 @@ def participant_rows(participant_dir, crops_dir):
     for form, pdf_path, _, week in weekly + final + intake:
         print(f"  {participant_dir.name}: {pdf_path.name}", flush=True)
         try:
-            rows.extend(collect(participant_dir.name, pdf_path, form, week, crops_dir))
-        except fitz.FileDataError as exc:
+            rows.extend(collect(participant_dir.name, pdf_path, form, week, crops_dir, fields_by_form))
+        except (UnreadableFile, fitz.FileDataError) as exc:
             # seen: an iPhone HEIF photo saved with a .pdf extension
-            print(f"    SKIPPED, can't open as PDF: {exc}", flush=True)
+            print(f"    SKIPPED, can't render: {exc}", flush=True)
     return rows
 
 
@@ -127,6 +132,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--base-dir", required=True, help="Folder with the real VPT001, VPT002, ... subfolders.")
     parser.add_argument("--batch", required=True, help="Batch name for the crops folder, e.g. 2.")
+    parser.add_argument("--fields", nargs="*", default=None,
+                        help="Field keys to sample, 'all' for every label on each form "
+                             "(default: the keys batches 1-2 used).")
     parser.add_argument("--participants", nargs="*", default=None,
                         help="Only these participants (default: every one not already in the sheet).")
     args = parser.parse_args()
@@ -140,12 +148,20 @@ def main():
     participants = args.participants or sorted(
         p.name for p in base_dir.iterdir() if p.is_dir() and p.name.startswith("VPT") and p.name not in already
     )
+    if args.fields == ["all"]:
+        fields_by_form = {form: tuple(key for _, key, _ in labels) for form, labels in LABEL_SETS.items()}
+    elif args.fields:
+        fields_by_form = {form: tuple(key for _, key, _ in labels if key in set(args.fields))
+                          for form, labels in LABEL_SETS.items()}
+    else:
+        fields_by_form = FIELDS_BY_FORM
+
     crops_dir = BENCH_DIR / f"real_ground_truth_sample_crops_{args.batch}"
     crops_dir.mkdir(exist_ok=True)
 
     rows = []
     for participant in sorted(participants, reverse=True):
-        rows.extend(participant_rows(base_dir / participant, crops_dir))
+        rows.extend(participant_rows(base_dir / participant, crops_dir, fields_by_form))
 
     for row in rows:
         ws.append([row.get(col) for col in header])
