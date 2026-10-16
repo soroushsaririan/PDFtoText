@@ -21,6 +21,7 @@ every cell is offset by it.
 """
 
 import re
+from collections import Counter
 from dataclasses import dataclass
 
 # Column key -> the printed header word to anchor on. Each is unique among
@@ -56,6 +57,11 @@ MILES_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(?:mi\b|mile)", re.I)
 BARE_NUMBER_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*$")
 DONE_RE = re.compile(r"check|tick|yes|done|✓|✔", re.I)
 NOT_DONE_RE = re.compile(r"^\s*(x|×|cross|no|blank|none|-+)\s*$", re.I)
+RAN_RE = re.compile(r"\b(ran|run|jog)", re.I)
+CROSS_TRAINING_RE = re.compile(r"\b(bike|biking|bicycl|cycl|swim|swam|yoga|elliptical|row|lift)", re.I)
+MINUTES_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(?:minutes|minute|mins|min)\b", re.I)
+HOURS_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(?:hours|hour|hrs|hr)\b", re.I)
+CLOCK_RE = re.compile(r"\b(\d{1,2}):([0-5]\d)\b")
 
 
 @dataclass
@@ -257,6 +263,65 @@ def completed_day(text):
     return None
 
 
+def ran_day(text):
+    """Whether this "Participation in Running & other?" cell records a run.
+
+    The column mixes running with everything else, and plenty of entries
+    name a run without a distance ("20 minutes running") -- so the day
+    counts towards days_ran even when no mileage can be parsed out of it.
+    A cell that names only cross-training does not count.
+    """
+    if text is None:
+        return False
+    text = str(text).strip()
+    if not text:
+        return False
+    if RAN_RE.search(text):
+        return True
+    if CROSS_TRAINING_RE.search(text):
+        return False
+    return parse_miles(text) is not None
+
+
+def parse_minutes(text):
+    """Minutes spent running in one cell, or None.
+
+    Only read off a cell that is running and nothing else: "30 minutes
+    running, 1 hour biking" would otherwise contribute the hour on the bike
+    to the week's running minutes. An explicit hour/minute wording wins over
+    a bare clock time, so "1 hour 5 minutes" isn't also counted as 1:05.
+    """
+    if text is None:
+        return None
+    text = str(text)
+    if CROSS_TRAINING_RE.search(text):
+        return None
+    total = sum(float(m) * 60 for m in HOURS_RE.findall(text))
+    minutes = MINUTES_RE.findall(text)
+    if minutes:
+        total += sum(float(m) for m in minutes)
+    elif not total:
+        clock = CLOCK_RE.search(text)
+        if not clock:
+            return None
+        total = int(clock.group(1)) + int(clock.group(2)) / 60
+    return total or None
+
+
+def _modal(values):
+    """The most common value; the smallest of them if several tie.
+
+    Picking by Counter order alone made the answer depend on set iteration
+    order, which is how a week reading 0, 2, 0, 2, 3 came out as 0.
+    """
+    tally = Counter(values)
+    most = max(tally.values())
+    modal = min(value for value, count in tally.items() if count == most)
+    # A count of exercises is always whole; "2.0" in the study's CSV is just
+    # an artefact of parsing it as a float.
+    return int(modal) if modal == int(modal) else modal
+
+
 def summarize(days):
     """Weekly totals from the per-day rows.
 
@@ -267,22 +332,77 @@ def summarize(days):
     *per exercise session*), so they are deliberately left out rather than
     filled with something that means something else.
     """
-    marks = [completed_day(d.get("completed")) for d in days]
-    miles = [parse_miles(d.get("running")) for d in days]
-    counts = [d.get("exercise_count") for d in days]
-
     out = {}
-    if any(m is not None for m in marks):
-        out["days_exercised"] = sum(1 for m in marks if m)
-    ran = [m for m in miles if m is not None]
+
+    exercised = recorded = 0
+    for day in days:
+        mark = completed_day(day.get("completed"))
+        count = _as_number(day.get("exercise_count"))
+        if mark is None and count is None:
+            continue
+        recorded += 1
+        # Most participants leave the tick box empty and write a number of
+        # exercises instead, so a positive count is itself the record that
+        # the day was done -- and a count of 0 says it wasn't.
+        if mark is True or (mark is None and count > 0):
+            exercised += 1
+    if recorded:
+        out["days_exercised"] = exercised
+
+    # A day with 0 exercises is not a session, so it says nothing about how
+    # many exercises a session holds.
+    counts = [_as_number(d.get("exercise_count")) for d in days]
+    counts = [c for c in counts if c is not None and c > 0]
+    if counts:
+        out["exercises_per_session"] = _modal(counts)
+
+    ran = [d.get("running") for d in days if ran_day(d.get("running"))]
     if ran:
         out["days_ran"] = len(ran)
-        out["mileage"] = round(sum(ran), 2)
-    numeric = [_as_number(c) for c in counts]
-    numeric = [n for n in numeric if n is not None]
-    if numeric:
-        out["exercises_per_session"] = max(set(numeric), key=numeric.count)
+        miles = [m for m in (parse_miles(t) for t in ran) if m is not None]
+        if miles:
+            out["mileage"] = round(sum(miles), 2)
+        minutes = [m for m in (parse_minutes(t) for t in ran) if m is not None]
+        if minutes:
+            out["running_minutes"] = round(sum(minutes))
     return out
+
+
+# A single day's entry beyond these is far likelier to be a misread digit
+# than a real training session -- the study recruits injured recreational
+# runners, and the model's known failure is inventing a digit ("4.1 miles"
+# read as "41 miles", which put a 52-mile week in the output).
+MAX_PLAUSIBLE_DAY_MILES = 30
+MAX_PLAUSIBLE_WEEK_MILES = 100
+MAX_PLAUSIBLE_DAY_MINUTES = 300
+MAX_PLAUSIBLE_SESSION_EXERCISES = 20
+
+
+def implausible(days, summary=None):
+    """Log-derived figures a person should check against the cell.
+
+    The per-day cells are read once each with no second pass to disagree
+    with, so a consensus flag can never catch them; an out-of-range value
+    is the only signal available.
+    """
+    summary = summary if summary is not None else summarize(days)
+    concerns = []
+    for day in days:
+        text = day.get("running")
+        miles = parse_miles(text) if ran_day(text) else None
+        if miles is not None and miles > MAX_PLAUSIBLE_DAY_MILES:
+            concerns.append(("mileage", f"day {day.get('day')}: {miles} miles", text))
+        minutes = parse_minutes(text) if ran_day(text) else None
+        if minutes is not None and minutes > MAX_PLAUSIBLE_DAY_MINUTES:
+            concerns.append(("running_minutes", f"day {day.get('day')}: {round(minutes)} min", text))
+        count = _as_number(day.get("exercise_count"))
+        if count is not None and count > MAX_PLAUSIBLE_SESSION_EXERCISES:
+            concerns.append(("exercises_per_session", f"day {day.get('day')}: {count} exercises",
+                             day.get("exercise_count")))
+    week_miles = summary.get("mileage")
+    if week_miles is not None and week_miles > MAX_PLAUSIBLE_WEEK_MILES:
+        concerns.append(("mileage", f"{week_miles} miles over the week", None))
+    return concerns
 
 
 def _as_number(text):

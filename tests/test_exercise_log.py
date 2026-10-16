@@ -172,3 +172,112 @@ class TestReadTable:
         img = Image.new("RGB", (4032, 2268), "white")
         days, summary = el.read_table(img, page(), lambda *a: "CHECK")
         assert days is None and summary is None
+
+
+class TestRanDay:
+    def test_a_run_without_a_distance_still_counts(self):
+        """Half the entries name a run and no mileage: "20 minutes
+        running" is a running day even though days_ran used to need miles."""
+        assert el.ran_day("20 minutes running") is True
+        assert el.ran_day("30 minutes running, 1 hour biking") is True
+
+    def test_a_bare_distance_counts(self):
+        assert el.ran_day("2.15 miles") is True
+
+    def test_cross_training_alone_does_not(self):
+        assert el.ran_day("Bike Ride: 55 miles, 3 hours 30 mins.") is False
+        assert el.ran_day("Biking 10.6 miles, 38 minutes") is False
+
+    def test_empty(self):
+        assert el.ran_day(None) is False
+        assert el.ran_day("  ") is False
+
+
+class TestMinutes:
+    def test_plain_minutes(self):
+        assert el.parse_minutes("4.33 miles Run, 40 minutes") == 40
+
+    def test_abbreviated(self):
+        assert el.parse_minutes("4.2 mile run (43 mins),") == 43
+
+    def test_hours_and_minutes(self):
+        assert el.parse_minutes("31.08 mile run, 6 hours 5 minutes") == 365
+
+    def test_a_clock_time_is_a_duration(self):
+        assert round(el.parse_minutes("Running, 2.42 miles, 27:50")) == 28
+
+    def test_an_explicit_wording_wins_over_a_clock(self):
+        assert el.parse_minutes("ran 1 hour 5 minutes (1:05)") == 65
+
+    def test_a_mixed_cell_contributes_nothing(self):
+        """Otherwise the hour on the bike lands in the week's running minutes."""
+        assert el.parse_minutes("30 minutes running, 1 hour biking") is None
+
+    def test_no_duration(self):
+        assert el.parse_minutes("2.15 miles") is None
+        assert el.parse_minutes(None) is None
+
+
+class TestSummarizeZeros:
+    def test_a_zero_count_is_not_a_session(self):
+        """A week reading 0, 2, 0, 2, 3 exercises used to report 0 per
+        session -- the tie between 0 and 2 was broken by set order."""
+        days = [{"exercise_count": c} for c in ("0", None, "2", "0", "2", None, "3")]
+        got = el.summarize(days)
+        assert got["exercises_per_session"] == 2
+        assert got["days_exercised"] == 3
+
+    def test_a_week_of_only_zeros_reports_no_session_size(self):
+        got = el.summarize([{"exercise_count": "0"}, {"exercise_count": "0"}])
+        assert "exercises_per_session" not in got
+        assert got["days_exercised"] == 0
+
+    def test_a_tie_is_resolved_the_same_way_every_time(self):
+        got = [el.summarize([{"exercise_count": "5"}, {"exercise_count": "2"}])
+               ["exercises_per_session"] for _ in range(20)]
+        assert set(got) == {2}
+
+    def test_a_written_count_stands_in_for_an_unticked_box(self):
+        """Most participants leave the tick box empty and write a number."""
+        days = [{"completed": "", "exercise_count": "4"},
+                {"completed": "", "exercise_count": None}]
+        assert el.summarize(days)["days_exercised"] == 1
+
+    def test_a_tick_wins_over_a_missing_count(self):
+        assert el.summarize([{"completed": "CHECK", "exercise_count": None}])["days_exercised"] == 1
+
+    def test_running_minutes_are_totalled_over_the_week(self):
+        days = [{"running": "4.33 miles Run, 40 minutes"},
+                {"running": "5.75 miles run, 55 minutes"},
+                {"running": "Biking 10.6 miles, 38 minutes"}]
+        got = el.summarize(days)
+        assert got["running_minutes"] == 95
+        assert got["days_ran"] == 2
+        assert got["mileage"] == 10.08
+
+    def test_a_run_with_no_distance_gives_days_but_no_mileage(self):
+        got = el.summarize([{"running": "20 minutes running"}])
+        assert got["days_ran"] == 1
+        assert "mileage" not in got
+
+
+class TestImplausible:
+    def test_an_inflated_digit_is_flagged(self):
+        """"4.1 miles" read as "41 miles" put a 52-mile week in the output."""
+        flags = el.implausible([{"day": 1, "running": "4 miles"}, {"day": 7, "running": "41 miles"}])
+        assert [f[0] for f in flags] == ["mileage"]
+        assert "day 7" in flags[0][1]
+
+    def test_an_ordinary_week_is_not_flagged(self):
+        assert el.implausible([{"day": d, "running": "3 miles"} for d in el.DAYS]) == []
+
+    def test_a_long_week_is_flagged_even_when_each_day_is_plausible(self):
+        days = [{"day": d, "running": "20 miles"} for d in el.DAYS]
+        assert any(f[0] == "mileage" and "over the week" in f[1] for f in el.implausible(days))
+
+    def test_an_absurd_exercise_count_is_flagged(self):
+        flags = el.implausible([{"day": 2, "exercise_count": "55"}])
+        assert [f[0] for f in flags] == ["exercises_per_session"]
+
+    def test_cross_training_mileage_is_not_flagged_as_running(self):
+        assert el.implausible([{"day": 1, "running": "Bike Ride: 55 miles, 3 hours 30 mins."}]) == []
