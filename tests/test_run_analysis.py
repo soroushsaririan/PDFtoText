@@ -53,3 +53,14 @@ class TestWeeklyRows:
         assert rows[0]["needs_review"] == "mileage"
         # participant_id comes from the folder name, not the handwriting
         assert "participant_id" not in rows[0] or rows[0]["participant_id"] == "VPT013"
+
+
+class TestWeekColumn:
+    """One blank week from a CRF row turned the whole column into
+    "2.0", so filtering the review queue by week matched nothing."""
+
+    def test_a_week_number_stays_a_whole_number(self):
+        assert run._week_text(2) == "2"
+
+    def test_a_row_with_no_week_is_blank(self):
+        assert run._week_text(None) == ""

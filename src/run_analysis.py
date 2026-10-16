@@ -28,6 +28,15 @@ def default_engine():
     return "vlm"
 
 
+def _week_text(week):
+    """A week number the review queue can be filtered on.
+
+    The CRF and exit-survey rows carry no week, and one blank in the
+    column was enough for pandas to write every other week as "2.0".
+    """
+    return "" if week is None else str(int(week))
+
+
 def build_weekly_rows(result):
     rows = []
     for wk in result["weeks"]:
@@ -132,10 +141,12 @@ def main():
         for hit in result["keyword_hits"]:
             all_keyword_hits.append({"participant_id": pdir.name, **hit})
         for f in result["unmatched_files"]:
-            all_unmatched.append({"participant_id": pdir.name, "file": f})
-        all_review.extend({"participant_id": pdir.name, **r} for r in result["review"])
+            name, _, why = f.partition(" -- ")
+            all_unmatched.append({"participant_id": pdir.name, "file": name, "reason": why})
+        all_review.extend({"participant_id": pdir.name, **r, "week": _week_text(r.get("week"))}
+                          for r in result["review"])
         if result["unmatched_files"]:
-            print(f"  {len(result['unmatched_files'])} file(s) not recognized -- see report or unmatched_files.csv")
+            print(f"  {len(result['unmatched_files'])} file(s) set aside -- see report or unmatched_files.csv")
 
     summary_df = pd.DataFrame(all_rows)
     summary_path = out_dir / "summary.csv"
@@ -168,7 +179,7 @@ def main():
     if all_review:
         print(f"Review queue CSV   : {out_dir / 'review_queue.csv'}  ({len(all_review)} fields to verify)")
     if all_unmatched:
-        print(f"Unmatched files CSV: {out_dir / 'unmatched_files.csv'}  ({len(all_unmatched)} files not recognized)")
+        print(f"Unmatched files CSV: {out_dir / 'unmatched_files.csv'}  ({len(all_unmatched)} files set aside)")
 
 
 if __name__ == "__main__":

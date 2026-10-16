@@ -124,13 +124,21 @@ def discover_files(participant_dir):
     week_notes = defaultdict(list)
     week_missed_markers = defaultdict(list)
     unmatched = []
+    # Why each file was set aside. A duplicate scan and a file nobody can
+    # read both end up here, and a reviewer should not have to open the
+    # folder to tell which is which.
+    set_aside_because = {}
+
+    def set_aside(path, why):
+        unmatched.append(path)
+        set_aside_because[path] = why
 
     for path in _walk_relevant_files(participant_dir):
         rel = str(path.relative_to(participant_dir))
         ext = path.suffix.lower()
 
         if EMAIL_RE.search(path.name):
-            unmatched.append(path)
+            set_aside(path, "printed email, not a study form")
             continue
 
         m_crf = CRF_RE.search(path.name)
@@ -153,7 +161,7 @@ def discover_files(participant_dir):
                 week_files[week_num].append(path)
             continue
 
-        unmatched.append(path)
+        set_aside(path, "no CRF visit number, exit-survey name or week number in the path")
 
     # Same CRF visit sometimes exists both at the participant root and
     # copied into the weekly-log folder; keep the first copy in file-walk
@@ -170,7 +178,7 @@ def discover_files(participant_dir):
     for visit_num, path in crf_visits:
         copy_key = (visit_num, path.name)
         if copy_key in seen_copies:
-            unmatched.append(path)
+            set_aside(path, f"second copy of CRF visit {visit_num}, filed in two places")
             continue
         seen_copies.add(copy_key)
         deduped_crf_visits.append((visit_num, path))
@@ -178,9 +186,11 @@ def discover_files(participant_dir):
 
     exit_candidates.sort()
     exit_survey = exit_candidates[0] if exit_candidates else None
-    unmatched.extend(exit_candidates[1:])
+    for path in exit_candidates[1:]:
+        set_aside(path, f"a second exit survey; \"{exit_survey.name}\" was read instead")
 
-    unmatched.extend(_find_empty_marker_dirs(participant_dir))
+    for path in _find_empty_marker_dirs(participant_dir):
+        set_aside(path, "folder says there is no log and holds no file")
 
     # The same weekly scan is sometimes filed twice under different names --
     # VPT014's logs are a phone photo plus a byte-identical copy renamed
@@ -193,7 +203,8 @@ def discover_files(participant_dir):
         for path in sorted(week_files.get(wn, [])):
             digest = _content_digest(path)
             if digest is not None and digest in seen_digests:
-                unmatched.append(path)
+                twin = next(k for k in kept if _content_digest(k) == digest)
+                set_aside(path, f"byte-identical copy of \"{twin.name}\"")
                 continue
             seen_digests.add(digest)
             kept.append(path)
@@ -204,7 +215,8 @@ def discover_files(participant_dir):
             "missed_markers": sorted(week_missed_markers.get(wn, [])),
         })
 
-    return {"crf_visits": crf_visits, "exit_survey": exit_survey, "weeks": weeks, "unmatched": unmatched}
+    return {"crf_visits": crf_visits, "exit_survey": exit_survey, "weeks": weeks,
+            "unmatched": unmatched, "unmatched_reasons": set_aside_because}
 
 
 def analyze_participant(participant_dir, image_dir, ocr_cache_dir, keywords, use_vlm=True, force=False, engine="mlx",
@@ -226,7 +238,10 @@ def analyze_participant(participant_dir, image_dir, ocr_cache_dir, keywords, use
         # located -- a page someone has to type in rather than a gap in the
         # study's records.
         "unread_logs": [],
-        "unmatched_files": [str(p.relative_to(participant_dir)) for p in files["unmatched"]],
+        "unmatched_files": [
+            f"{p.relative_to(participant_dir)} -- {files['unmatched_reasons'].get(p, 'not recognized')}"
+            for p in files["unmatched"]
+        ],
     }
 
     def ocr_one(path):

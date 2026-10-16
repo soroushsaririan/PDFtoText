@@ -119,9 +119,9 @@ def render_participant_report(result, keywords_configured):
     if unmatched:
         lines.append("\n## Files Not Processed")
         lines.append(
-            "_These files were found in this participant's folder but didn't match a recognized "
-            "pattern (CRF visit N, Exit survey, or a Week N log), so they were not analyzed. Check "
-            "whether any of them should have been -- naming may just be inconsistent._"
+            "_These files were found in this participant's folder and set aside, each with the "
+            "reason. A duplicate scan or a printed email needs nothing; a file listed as "
+            "unrecognized or unreadable may be a record that was missed, so check the naming._"
         )
         lines.append("")
         for f in unmatched:

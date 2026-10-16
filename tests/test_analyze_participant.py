@@ -203,3 +203,50 @@ class TestWeeklyDuplicateFiles:
 
         assert len(got["weeks"][0]["files"]) == 2
         assert got["unmatched"] == []
+
+
+class TestWhyAFileWasSetAside:
+    """"9 files not recognized" read as nine lost records; most were
+    duplicate scans. Every set-aside file now carries its reason."""
+
+    def test_a_duplicate_scan_names_the_file_it_duplicates(self, tmp_path):
+        d = tmp_path / "VPT014"
+        (d / "VPT014 weekly Exercise log").mkdir(parents=True)
+        for name in ("VPT014 Exercise Log week 1 .pdf", "VPT014 Exercise Log week 1.JPG"):
+            (d / "VPT014 weekly Exercise log" / name).write_bytes(b"same scan bytes")
+        got = ap.discover_files(d)
+        [path] = got["unmatched"]
+        assert path.name == "VPT014 Exercise Log week 1.JPG"
+        assert got["unmatched_reasons"][path] == 'byte-identical copy of "VPT014 Exercise Log week 1 .pdf"'
+
+    def test_a_printed_email_says_so(self, tmp_path):
+        d = tmp_path / "VPT007"
+        (d / "week 2").mkdir(parents=True)
+        f = d / "week 2" / "VPT week 2 email communication.pdf"
+        f.write_bytes(b"x")
+        got = ap.discover_files(d)
+        assert got["unmatched_reasons"][f] == "printed email, not a study form"
+
+    def test_an_unrecognized_name_says_what_was_looked_for(self, tmp_path):
+        d = tmp_path / "VPT001"
+        d.mkdir()
+        f = d / "random handout.pdf"
+        f.write_bytes(b"x")
+        got = ap.discover_files(d)
+        assert "week number" in got["unmatched_reasons"][f]
+
+    def test_a_second_copy_of_a_crf_visit_names_the_visit(self, tmp_path):
+        d = tmp_path / "VPT002"
+        (d / "VPT002 weekly exercise log").mkdir(parents=True)
+        (d / "VPT002 CRF visit 3.pdf").write_bytes(b"a")
+        (d / "VPT002 weekly exercise log" / "VPT002 CRF visit 3.pdf").write_bytes(b"b")
+        got = ap.discover_files(d)
+        [path] = got["unmatched"]
+        assert got["unmatched_reasons"][path] == "second copy of CRF visit 3, filed in two places"
+
+    def test_an_empty_no_log_folder_says_it_holds_nothing(self, tmp_path):
+        d = tmp_path / "VPT016"
+        marker = d / "No VPT016 Weekly Exercise Log"
+        marker.mkdir(parents=True)
+        got = ap.discover_files(d)
+        assert got["unmatched_reasons"][marker] == "folder says there is no log and holds no file"
