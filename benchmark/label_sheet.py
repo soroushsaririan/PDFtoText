@@ -122,12 +122,25 @@ PAGE_TEMPLATE = r"""<!doctype html>
 </form>
 <script>
 const items = __ITEMS__;
+const el = id => document.getElementById(id);
 const store = "ground-truth-" + items.length;
-let answers = JSON.parse(localStorage.getItem(store) || "{}");
+// Opened straight off disk, Chrome can refuse storage for a file:// page,
+// and then every keystroke would throw. Losing the resume is survivable;
+// losing the page is not.
+const keep = {
+  read() { try { return JSON.parse(localStorage.getItem(store) || "{}"); } catch (e) { return {}; } },
+  write(v) { try { localStorage.setItem(store, JSON.stringify(v)); } catch (e) { warn(); } },
+};
+let warned = false;
+function warn() {
+  if (warned) return;
+  warned = true;
+  el("saved").textContent = "not saved between visits here -- run with --serve";
+  el("saved").className = "";
+}
+let answers = keep.read();
 let at = items.findIndex(it => !(it.row in answers));
 if (at < 0) at = items.length - 1;
-
-const el = id => document.getElementById(id);
 
 function show() {
   const it = items[at];
@@ -146,14 +159,16 @@ function show() {
   el("bar").max = items.length;
   el("bar").value = done;
   el("count").textContent = `${done} of ${items.length} · showing ${at + 1}`;
-  el("saved").textContent = it.row in answers ? "saved" : "";
-  el("saved").className = it.row in answers ? "done" : "";
+  if (!warned) {
+    el("saved").textContent = it.row in answers ? "saved" : "";
+    el("saved").className = it.row in answers ? "done" : "";
+  }
   el("value").focus();
 }
 
 function record(value) {
   answers[items[at].row] = value;
-  localStorage.setItem(store, JSON.stringify(answers));
+  keep.write(answers);
   at = Math.min(at + 1, items.length - 1);
   show();
 }
@@ -180,9 +195,30 @@ show();
 """
 
 
+def serve(port, page):
+    """Hand the page out over localhost until interrupted."""
+    import functools
+    import http.server
+    import webbrowser
+
+    handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(page.parent))
+    url = f"http://127.0.0.1:{port}/{page.name}"
+    with http.server.ThreadingHTTPServer(("127.0.0.1", port), handler) as server:
+        print(f"\n{url}\nCtrl-C when done.")
+        webbrowser.open(url)
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            print()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--apply", metavar="CSV", help="Write an exported CSV back into the sheet.")
+    parser.add_argument("--serve", nargs="?", type=int, const=8731, default=None,
+                        help="Serve the page on this port instead of leaving it to be opened off disk; "
+                             "a file:// page can be refused browser storage, and then nothing is kept "
+                             "between visits.")
     parser.add_argument("--sheet", default=str(SHEET_PATH))
     args = parser.parse_args()
 
@@ -199,7 +235,10 @@ def main():
     print(f"{len(pending)} unlabelled row(s) across {len(by_field)} field(s)")
     for field, count in sorted(by_field.items(), key=lambda kv: -kv[1]):
         print(f"  {field:24s} {count}")
-    print(f"\nOpen: {page}")
+    if args.serve:
+        serve(args.serve, page)
+    else:
+        print(f"\nOpen: {page}")
 
 
 if __name__ == "__main__":
