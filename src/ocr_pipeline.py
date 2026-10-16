@@ -599,21 +599,41 @@ def log_page_words(page_image):
 LOG_ROTATIONS = (0, 270, 90, 180)
 
 
+# Tesseract on a full-size page scan costs seconds, and most pages in a log
+# file are not the log -- reading every page four ways put hours on a run.
+# The turns past upright are decided on a small copy instead, and only the
+# turn that wins is read at full size.
+LOG_PROBE_WIDTH = 1500
+
+
+def _probe(page_image):
+    """Whether a shrunk copy of this page looks like an Exercise Log."""
+    if page_image.width > LOG_PROBE_WIDTH:
+        height = round(page_image.height * LOG_PROBE_WIDTH / page_image.width)
+        page_image = page_image.resize((LOG_PROBE_WIDTH, height))
+    return exercise_log.is_exercise_log(log_page_words(page_image))
+
+
 def upright_log_page(page_image, rotations=LOG_ROTATIONS):
     """(image, tesseract words) for whichever turn of this page reads as an
-    Exercise Log with a locatable table, or (None, None).
+    Exercise Log, or (None, None).
 
-    A turn that finds the table beats one that only finds headers, and more
-    headers beats fewer -- a sideways page still matches a few header words
-    by chance, so "is it a log" alone picks the wrong orientation.
+    Upright is read first and kept the moment its table is located. Only a
+    page that fails that is turned, and a turn that finds the table beats
+    one that only finds headers -- a sideways page still matches a few
+    header words by chance, so "is it a log" alone picks the wrong one.
     """
     best = None
     for angle in rotations:
         turned = page_image if angle == 0 else page_image.rotate(angle, expand=True)
+        if angle != 0 and not _probe(turned):
+            continue
         data = log_page_words(turned)
         if not exercise_log.is_exercise_log(data):
             continue
         located = exercise_log.find_table(data, turned.width, turned.height) is not None
+        if located and angle == 0:
+            return turned, data
         score = (located, len(exercise_log.header_positions(data)))
         if best is None or score > best[0]:
             best = (score, turned, data)
