@@ -26,6 +26,7 @@ benchmark/*.csv
 benchmark/*.json
 benchmark/*.xlsx
 benchmark/*_crops/
+benchmark/*_crops_*/
 !benchmark/results_*.csv
 
 # macOS

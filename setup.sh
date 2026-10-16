@@ -25,11 +25,16 @@ echo "==> Installing Python dependencies..."
 ./.venv/bin/pip install --upgrade pip -q
 ./.venv/bin/pip install -r requirements.txt
 
+if [ "$(uname -m)" = "arm64" ]; then
+  echo "==> Apple Silicon: installing mlx-vlm for the default --engine mlx (Qwen2.5-VL-7B, 4-bit)..."
+  ./.venv/bin/pip install -r requirements-mlx.txt
+fi
+
 echo "==> Generating synthetic sample data..."
 ./.venv/bin/python src/generate_sample_data.py
 
 echo "==> Running analysis on sample data..."
-echo "    (first run downloads the Qwen2.5-VL handwriting model, ~7 GB -- this can take a while)"
+echo "    (first run downloads the handwriting model, ~5-7 GB -- this can take a while)"
 ./.venv/bin/python src/run_analysis.py
 
 echo

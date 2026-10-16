@@ -25,3 +25,4 @@ pytesseract
 kaggle
 jiwer
 openpyxl
+scipy

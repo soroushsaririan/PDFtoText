@@ -24,7 +24,6 @@ extract_value() pulls just that line out before comparing to ground truth
 import argparse
 import re
 import sys
-import tempfile
 from collections import Counter
 from pathlib import Path
 
@@ -67,32 +66,12 @@ STRUCTURED_MAX_NEW_TOKENS = 400
 
 FILTERS = ("none", "autocontrast", "contrast", "sharpen")
 
-MLX_MODEL_NAME = "mlx-community/Qwen2.5-VL-7B-Instruct-4bit"
 
+def _load_mlx_generator():
+    from ocr_pipeline import MLX_MODEL_NAME, _load_mlx, mlx_generate
 
-def _load_mlx_generator(model_name=MLX_MODEL_NAME):
-    """Apple-Silicon-native 4-bit-quantized 7B, via the MLX framework rather
-    than transformers/torch -- a full-precision 7B (~14GB) doesn't fit
-    comfortably in 16GB unified memory, but this quantizes down to ~4.5GB.
-
-    generate()'s image= wiring only produces real output when the prompt has
-    already been through apply_chat_template(..., num_images=1) -- skipping
-    that step silently drops the image and the model just asks to see one."""
-    from mlx_vlm import generate as mlx_generate
-    from mlx_vlm import load as mlx_load
-    from mlx_vlm.prompt_utils import apply_chat_template as mlx_apply_chat_template
-
-    model, processor = mlx_load(model_name)
-
-    def generate(crop, prompt, max_new_tokens):
-        templated = mlx_apply_chat_template(processor, model.config, prompt, num_images=1)
-        with tempfile.NamedTemporaryFile(suffix=".png", delete=True) as f:
-            crop.convert("RGB").save(f.name)
-            result = mlx_generate(model, processor, templated, image=f.name,
-                                   max_tokens=max_new_tokens, temperature=0.0, verbose=False)
-        return result.text.strip()
-
-    return generate, model_name
+    _load_mlx()
+    return mlx_generate, MLX_MODEL_NAME
 
 
 def apply_filter(crop, name):
@@ -258,11 +237,16 @@ def main():
         return
 
     df = pd.read_excel(SRC_PATH)
+    skipped = df["ground_truth"].astype(str).str.strip().str.lower() == "skip"
+    if skipped.any():
+        # marked by hand as not a real form field (e.g. a printed email)
+        print(f"Leaving out {skipped.sum()} row(s) marked skip.")
+        df = df[~skipped].reset_index(drop=True)
     missing = df["ground_truth"].isna() | (df["ground_truth"].astype(str).str.strip() == "")
     if missing.any():
-        print(f"{missing.sum()} row(s) still have no ground_truth -- fill those in first:")
-        print(df[missing][["participant", "pdf", "field_key"]].to_string())
-        return
+        # new batches are appended with ground_truth blank and filled in over time
+        print(f"Skipping {missing.sum()} row(s) with no ground_truth yet; scoring the other {(~missing).sum()}.")
+        df = df[~missing].reset_index(drop=True)
     if args.limit:
         df = df.head(args.limit).reset_index(drop=True)
 

@@ -7,7 +7,6 @@ answers side by side (CSV / JSON / Excel + the crops) for review.
 """
 
 import argparse
-import re
 import sys
 from pathlib import Path
 
@@ -28,8 +27,8 @@ from field_extraction import (
     INTAKE_LABELS,
     WEEKLY_LABELS,
 )
+from field_reader import answer_crop, field_kind_for, label_hits, line_index, next_label_start_x
 from ocr_pipeline import (
-    CROP_PADDING,
     RENDER_ZOOM,
     VLM_MAX_NEW_TOKENS,
     VLM_MAX_NEW_TOKENS_DEFAULT,
@@ -42,10 +41,6 @@ FORM_LABEL_SETS = {
     "final": FINAL_LABELS,
     "exit": EXIT_LABELS,
 }
-
-ANSWER_CROP_WIDTH = 1100
-NOTES_LINE_SPAN = 6
-PAGE_MARGIN = 32
 
 
 def resolve_jobs(participant_dir, forms):
@@ -69,132 +64,6 @@ def resolve_jobs(participant_dir, forms):
     if "exit" in forms and found["exit_survey"] is not None:
         jobs.append(("exit", found["exit_survey"], EXIT_LABELS, None))
     return jobs
-
-
-def field_kind_for(key, kind, label):
-    text = label.lower()
-    if "pain" in text:
-        return "pain"
-    if key in ("notes", "comments"):
-        return "notes"
-    if kind == "yesno":
-        return "yesno"
-    if kind == "number":
-        return "number"
-    return "text"
-
-
-def _line_index(data):
-    lines = {}
-    for i in range(len(data["text"])):
-        if float(data["conf"][i]) < 0:
-            continue
-        key = (data["block_num"][i], data["par_num"][i], data["line_num"][i])
-        lines.setdefault(key, []).append(i)
-    return lines
-
-
-def _norm(text):
-    return re.sub(r"[^a-z0-9]", "", text.lower())
-
-
-LOW_CONF_LABEL_TOKEN = 50
-
-
-def _label_hits(data, lines, label):
-    """(box, line_key) for the printed label words, dropping the dotted
-    guideline tesseract merges in. line_key lets the caller check what else
-    is printed further along the same physical line (see _next_label_start_x).
-
-    A printed label sitting right up against the handwritten answer (no gap)
-    sometimes gets OCR'd as ONE token spanning both, e.g. "ID:_/P" at 38%
-    confidence for "Participant ID:" immediately followed by a handwritten
-    "VPT020" -- the real printed text is just "ID:", but the token's measured
-    box also covers the first stroke or two of the handwriting. Trusting that
-    token's right edge pushed the label box (and therefore the answer crop
-    that starts just after it) past the "V" and "P", clipping them from the
-    saved crop entirely. So: for any token below LOW_CONF_LABEL_TOKEN, use its
-    LEFT edge rather than its right edge when computing the box's rightmost
-    extent -- a real printed word is normally high-confidence, so a low score
-    is itself the signal that the token's width can't be trusted."""
-    want = _norm(label)
-    if len(want) < 6:
-        return []
-    hits = []
-    for line_key, idxs in lines.items():
-        idxs = sorted(idxs, key=lambda i: data["left"][i])
-        running = ""
-        covered = []
-        for i in idxs:
-            tok = data["text"][i].strip()
-            if not tok:
-                continue
-            running += _norm(tok)
-            covered.append(i)
-            if want in running:
-                xs = [data["left"][j] for j in covered]
-                ys = [data["top"][j] for j in covered]
-                xe = [data["left"][j] + data["width"][j]
-                      if float(data["conf"][j]) >= LOW_CONF_LABEL_TOKEN else data["left"][j]
-                      for j in covered]
-                ye = [data["top"][j] + data["height"][j] for j in covered]
-                hits.append(((min(xs), min(ys), max(xe), max(ye)), line_key))
-                break
-    return hits
-
-
-LABEL_END_RE = re.compile(r"[:?]$")
-
-
-def _next_label_start_x(data, line_idxs, after_x):
-    """Leftmost x, after after_x on this tesseract line, where another
-    printed field label starts -- an answer crop should stop there instead
-    of bleeding into that field's own answer. Without this, a fixed-width
-    crop for e.g. "Participant ID:" can capture "Date: ... Tester: ..." from
-    later in the same printed row.
-
-    Every label on these forms ends in ':' or '?' (see field_extraction.py's
-    *_LABELS), so a token ending in one of those -- regardless of whether
-    it's part of the field currently being cropped -- marks a label start.
-    This can land one word into a multi-word label (e.g. stop at "ID:"
-    rather than "Participant ID:"), which just trims a little extra label
-    text into the crop rather than the next field's answer; harmless.
-
-    Requires a minimum OCR confidence: messy handwriting Tesseract can't
-    read sometimes gets misread as a token that happens to end in ':' or
-    '?' purely as noise (seen: "left inner" read as "Ce:" at confidence 1),
-    which would wrongly truncate a real multi-word answer. Real printed
-    labels in this form set score at least ~30 confidence even when faint
-    ("Date:" ~33); a low floor here is enough to reject pure noise without
-    rejecting a real label."""
-    MIN_LABEL_CONF = 10
-    candidates = [i for i in sorted(line_idxs, key=lambda i: data["left"][i])
-                  if data["text"][i].strip() and data["left"][i] > after_x]
-    for i in candidates:
-        tok = data["text"][i].strip()
-        if float(data["conf"][i]) >= MIN_LABEL_CONF and LABEL_END_RE.search(tok):
-            return data["left"][i]
-    return None
-
-
-def _answer_crop(page_image, label_box, field_kind, max_x1=None):
-    x0, y0, x1, y1 = label_box
-    line_h = max(y1 - y0, 12)
-    w, h = page_image.width, page_image.height
-    if field_kind == "notes":
-        cx0, cx1 = PAGE_MARGIN, w - PAGE_MARGIN
-        cy0 = min(h, y1 + CROP_PADDING)
-        cy1 = min(h, y1 + line_h * NOTES_LINE_SPAN)
-    else:
-        cx0 = x1 + CROP_PADDING
-        cx1 = min(w - PAGE_MARGIN, x1 + ANSWER_CROP_WIDTH)
-        if max_x1 is not None:
-            cx1 = min(cx1, max(cx0 + 8, max_x1 - CROP_PADDING))
-        cy0 = max(0, y0 - CROP_PADDING)
-        cy1 = min(h, y1 + CROP_PADDING)
-    if cx1 - cx0 < 8 or cy1 - cy0 < 8:
-        return None
-    return page_image.crop((cx0, cy0, cx1, cy1))
 
 
 def _load_generator(model_override):
@@ -275,12 +144,12 @@ def collect_fields(pdf_path, form, label_set, styles, out_crops, limit, week, zo
     for page_no, img_path in enumerate(pages, start=1):
         page_image = Image.open(img_path).convert("RGB")
         data = pytesseract.image_to_data(page_image, config="--oem 3 --psm 6", output_type=Output.DICT)
-        lines = _line_index(data)
+        lines = line_index(data)
         for label, key, kind in label_set:
             field_kind = field_kind_for(key, kind, label)
-            for occ, (box, line_key) in enumerate(_label_hits(data, lines, label), start=1):
-                max_x1 = _next_label_start_x(data, lines.get(line_key, []), box[2])
-                crop = _answer_crop(page_image, box, field_kind, max_x1=max_x1)
+            for occ, (box, line_key) in enumerate(label_hits(data, lines, label), start=1):
+                max_x1 = next_label_start_x(data, lines.get(line_key, []), box[2])
+                crop = answer_crop(page_image, box, field_kind, max_x1=max_x1)
                 if crop is None:
                     continue
                 wk_tag = f"_wk{week}" if week is not None else ""

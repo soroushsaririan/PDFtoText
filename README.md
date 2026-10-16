@@ -80,6 +80,22 @@ that couldn't be matched to a participant/visit/week is listed in each
 report under "Files Not Processed" and in `outputs/unmatched_files.csv`,
 rather than being silently skipped.
 
+### Fields to verify
+
+(Needs the `mlx` engine: on Apple Silicon, `./.venv/bin/pip install -r
+requirements-mlx.txt` once after setup. Without it the pipeline falls back
+to the `vlm` engine, which reads each field once.)
+
+On Apple Silicon the default engine (`mlx`, Qwen2.5-VL-7B 4-bit) reads each
+handwritten field more than once -- from different crops of the answer
+area and with different prompts -- and compares the readings. Where they
+agree the value is used as-is; where they don't, the best guess is still
+reported but the field is also listed in the participant report under
+"Fields To Verify", in `outputs/review_queue.csv` (with every reading and
+the path of the crop image), and in the `needs_review` column of
+`summary.csv`. Check those against the crop or the PDF. `--passes 1`
+turns this off (one read per field, faster, nothing flagged).
+
 ## Command reference
 
 | Flag | What it does |
@@ -87,8 +103,9 @@ rather than being silently skipped.
 | `--base-dir PATH` | Folder with `VPT001`, `VPT002`, ... subfolders (default: `sample_usb/`) |
 | `--out-dir PATH` | Where reports/CSVs/cache are written (default: `outputs/`) |
 | `--keywords-file PATH` | Override the keyword list (default: `config/keywords.txt`) |
-| `--engine {vlm,trocr}` | Handwriting engine to use (default: `vlm`) |
-| `--model NAME` | Use a different handwriting model, e.g. `Qwen/Qwen2.5-VL-7B-Instruct` or `microsoft/trocr-large-handwritten` |
+| `--engine {mlx,vlm,trocr}` | Handwriting engine: `mlx` (Qwen2.5-VL-7B 4-bit, default on Apple Silicon), `vlm` (Qwen2.5-VL-3B via transformers, default elsewhere), `trocr` |
+| `--passes N` | `mlx` only: read each field N ways and flag disagreements for review (default: 2) |
+| `--model NAME` | Use a different handwriting model for the chosen engine, e.g. `microsoft/trocr-large-handwritten` |
 | `--no-vlm` | Skip the handwriting model; printed/checkbox/circled fields only (fast) |
 | `--participants ID ...` | Only process specific participants, e.g. `VPT001 VPT003` |
 | `--force` | Ignore the OCR cache and redo everything |
@@ -108,8 +125,9 @@ combined `outputs/keyword_hits.csv`.
 
 ## Running the tests
 
-The tests cover the model-free logic -- file discovery, field extraction,
-prompt building, and report rendering -- so they run in under a second with
+The tests cover the model-free logic -- file discovery, cropping, field
+extraction, combining readings, prompt building, and report rendering --
+so they run in under a second with
 no model download.
 
 ```bash
