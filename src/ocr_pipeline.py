@@ -31,7 +31,7 @@ VLM_MAX_NEW_TOKENS = {"notes": 128}
 VLM_MAX_NEW_TOKENS_DEFAULT = 32
 
 # Bumped when Exercise Log reading changes, so cached pages redo it.
-EXERCISE_LOG_REVISION = 2
+EXERCISE_LOG_REVISION = 3
 
 RENDER_ZOOM = 3.0
 TESSERACT_WORD_CONF_THRESHOLD = 70
@@ -243,6 +243,11 @@ class PageResult:
     field_reads: list = field(default_factory=list)
     log_days: list = field(default_factory=list)
     log_summary: dict = field(default_factory=dict)
+    # "" when the page isn't an Exercise Log, "read" when its table was
+    # located, "table_not_located" when it is plainly a log that nothing
+    # could be read from -- that last one is a page for someone to type in
+    # by hand, so it has to reach the output rather than vanish.
+    log_status: str = ""
 
     @property
     def text(self):
@@ -616,11 +621,16 @@ def upright_log_page(page_image, rotations=LOG_ROTATIONS):
 
 
 def read_exercise_log(page_image, field_dir, generate=None):
-    """Per-day readings and weekly totals for an Exercise Log page, or
-    (None, None) when the page isn't one or its table can't be located."""
+    """(per-day readings, weekly totals, status) for an Exercise Log page.
+
+    status is "" when the page isn't a log at all, "table_not_located" when
+    it is one but the day rows couldn't be found, and "read" otherwise.
+    """
     page_image, data = upright_log_page(page_image)
     if data is None:
-        return None, None
+        return None, None, ""
+    if exercise_log.find_table(data, page_image.width, page_image.height) is None:
+        return None, None, "table_not_located"
     generate = generate or mlx_generate
     field_dir = Path(field_dir)
     field_dir.mkdir(parents=True, exist_ok=True)
@@ -635,7 +645,8 @@ def read_exercise_log(page_image, field_dir, generate=None):
         text = _clean_vlm_text(raw)
         return None if text is None or text.strip().upper() == "BLANK" else text
 
-    return exercise_log.read_table(page_image, data, read_cell, columns=tuple(LOG_CELL_PROMPTS))
+    days, summary = exercise_log.read_table(page_image, data, read_cell, columns=tuple(LOG_CELL_PROMPTS))
+    return days, summary, "read"
 
 
 def _engine_model_name(engine):
@@ -670,7 +681,8 @@ def run_ocr_on_file(file_path, image_dir, ocr_cache_dir, use_vlm=True, force=Fal
             reads = [FieldRead(**{**r, "bbox": tuple(r["bbox"])}) for r in p.get("field_reads", [])]
             pages.append(PageResult(page_number=p["page_number"], image_path=p["image_path"], lines=lines,
                                     field_reads=reads, log_days=p.get("log_days") or [],
-                                    log_summary=exercise_log.summarize(p["log_days"]) if p.get("log_days") else {}))
+                                    log_summary=exercise_log.summarize(p["log_days"]) if p.get("log_days") else {},
+                                    log_status=p.get("log_status", "")))
         return pages
 
     # mlx reads handwriting per printed label (field_reader) rather than per
@@ -681,7 +693,7 @@ def run_ocr_on_file(file_path, image_dir, ocr_cache_dir, use_vlm=True, force=Fal
     pages = []
     for i, img_path in enumerate(image_paths, start=1):
         lines = ocr_page(img_path, use_vlm=use_vlm and not label_anchored, engine=engine)
-        reads, log_days, log_summary = [], None, None
+        reads, log_days, log_summary, log_status = [], None, None, ""
         if label_anchored:
             field_dir = Path(img_path).parent / "fields" / f"page_{i:02d}"
             page_image = Image.open(img_path).convert("RGB")
@@ -689,9 +701,9 @@ def run_ocr_on_file(file_path, image_dir, ocr_cache_dir, use_vlm=True, force=Fal
             if not reads:
                 # No printed labels on this page -- it may be an Exercise Log,
                 # which is a table rather than label/answer pairs.
-                log_days, log_summary = read_exercise_log(page_image, field_dir / "log")
+                log_days, log_summary, log_status = read_exercise_log(page_image, field_dir / "log")
         pages.append(PageResult(page_number=i, image_path=str(img_path), lines=lines, field_reads=reads,
-                                log_days=log_days or [], log_summary=log_summary or {}))
+                                log_days=log_days or [], log_summary=log_summary or {}, log_status=log_status))
 
     serializable = {
         "source": str(file_path),
@@ -705,6 +717,7 @@ def run_ocr_on_file(file_path, image_dir, ocr_cache_dir, use_vlm=True, force=Fal
                 "field_reads": [r.__dict__ for r in p.field_reads],
                 "log_days": p.log_days,
                 "log_summary": p.log_summary,
+                "log_status": p.log_status,
             }
             for p in pages
         ],

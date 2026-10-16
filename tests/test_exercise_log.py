@@ -281,3 +281,24 @@ class TestImplausible:
 
     def test_cross_training_mileage_is_not_flagged_as_running(self):
         assert el.implausible([{"day": 1, "running": "Bike Ride: 55 miles, 3 hours 30 mins."}]) == []
+
+
+class TestDistanceWrittenNextToRun:
+    """VPT003 logs every day as "<miles> run; <miles> bike", which the
+    mile-word patterns alone read as no mileage at all."""
+
+    def test_a_distance_before_the_word_run(self):
+        assert el.parse_miles("5 run") == 5.0
+
+    def test_no_space_is_still_a_distance(self):
+        assert el.parse_miles("6run") == 6.0
+
+    def test_the_run_figure_wins_over_the_cross_training_one(self):
+        assert el.parse_miles("8.5 run, 15 bike") == 8.5
+        assert el.parse_miles("6.5 run, 10 bike") == 6.5
+
+    def test_a_run_day_even_without_a_space(self):
+        assert el.ran_day("6run") is True
+
+    def test_minutes_are_not_read_as_miles(self):
+        assert el.parse_miles("20 minutes running") is None

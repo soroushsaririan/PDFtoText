@@ -222,6 +222,10 @@ def analyze_participant(participant_dir, image_dir, ocr_cache_dir, keywords, use
         "weeks": [],
         "keyword_hits": [],
         "review": [],
+        # Exercise Logs that are plainly logs but whose table couldn't be
+        # located -- a page someone has to type in rather than a gap in the
+        # study's records.
+        "unread_logs": [],
         "unmatched_files": [str(p.relative_to(participant_dir)) for p in files["unmatched"]],
     }
 
@@ -318,6 +322,8 @@ def analyze_participant(participant_dir, image_dir, ocr_cache_dir, keywords, use
         queue_review(pages, fx.WEEKLY_LABELS, file_names, "weekly", week=wk["week"])
         log_days = _log_days(pages)
         queue_log_review(pages, file_names, wk["week"])
+        result["unread_logs"] += [{"week": wk["week"], "source": file_names, "page": page.image_path}
+                                  for page in pages if page.log_status == "table_not_located"]
         result["weeks"].append({"week": wk["week"], "status": "completed", "note": None, "fields": fields,
                                 "raw": raw, "file": file_names, "log_days": log_days})
 

@@ -113,6 +113,7 @@ def main():
 
     all_rows = []
     all_log_rows = []
+    all_unread_logs = []
     all_keyword_hits = []
     all_unmatched = []
     all_review = []
@@ -127,6 +128,7 @@ def main():
 
         all_rows.extend(build_weekly_rows(result))
         all_log_rows.extend(build_log_rows(result))
+        all_unread_logs.extend({"participant_id": pdir.name, **u} for u in result.get("unread_logs", []))
         for hit in result["keyword_hits"]:
             all_keyword_hits.append({"participant_id": pdir.name, **hit})
         for f in result["unmatched_files"]:
@@ -142,6 +144,9 @@ def main():
     if all_log_rows:
         pd.DataFrame(all_log_rows).to_csv(out_dir / "exercise_log_days.csv", index=False)
 
+    if all_unread_logs:
+        pd.DataFrame(all_unread_logs).to_csv(out_dir / "unread_logs.csv", index=False)
+
     if all_keyword_hits:
         pd.DataFrame(all_keyword_hits).to_csv(out_dir / "keyword_hits.csv", index=False)
 
@@ -156,6 +161,8 @@ def main():
     print(f"Weekly summary CSV : {summary_path}  ({len(summary_df)} rows)")
     if all_log_rows:
         print(f"Exercise log CSV   : {out_dir / 'exercise_log_days.csv'}  ({len(all_log_rows)} day rows)")
+    if all_unread_logs:
+        print(f"Logs to type by hand: {out_dir / 'unread_logs.csv'}  ({len(all_unread_logs)} pages)")
     if all_keyword_hits:
         print(f"Keyword hits CSV   : {out_dir / 'keyword_hits.csv'}  ({len(all_keyword_hits)} hits)")
     if all_review:

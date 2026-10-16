@@ -35,3 +35,4 @@ benchmark/*_crops_*/
 # Editor
 .vscode/
 .idea/
+benchmark/label_sheet.html

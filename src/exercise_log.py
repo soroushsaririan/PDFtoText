@@ -58,6 +58,10 @@ BARE_NUMBER_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*$")
 DONE_RE = re.compile(r"check|tick|yes|done|✓|✔", re.I)
 NOT_DONE_RE = re.compile(r"^\s*(x|×|cross|no|blank|none|-+)\s*$", re.I)
 RAN_RE = re.compile(r"\b(ran|run|jog)", re.I)
+# "5 run", "8.5 run, 15 bike", "6run", "4.2 mile run" -- a distance written
+# immediately before the word for the activity, which is how most of the
+# study's logs record a run and how none of them record anything else.
+RUN_DISTANCE_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(?:miles?|mi)?\s*(?:run\w*|ran\b|jog\w*)", re.I)
 CROSS_TRAINING_RE = re.compile(r"\b(bike|biking|bicycl|cycl|swim|swam|yoga|elliptical|row|lift)", re.I)
 MINUTES_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(?:minutes|minute|mins|min)\b", re.I)
 HOURS_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(?:hours|hour|hrs|hr)\b", re.I)
@@ -239,8 +243,13 @@ def parse_miles(text):
     if text is None:
         return None
     text = str(text)
-    if re.search(r"\b(bike|biking|cycl|swim|yoga|elliptical|row)", text, re.I) \
-            and not re.search(r"\bran\b|\brun", text, re.I):
+    # A distance attached to the word "run" is the one figure in the cell
+    # that can only be running, so it wins over a loose "<n> miles" --
+    # "8.5 run, 15 bike" is 8.5 miles of running.
+    attached = RUN_DISTANCE_RE.search(text)
+    if attached:
+        return float(attached.group(1))
+    if CROSS_TRAINING_RE.search(text) and not RAN_RE.search(text):
         return None
     hit = MILES_RE.search(text)
     if hit:
@@ -276,7 +285,7 @@ def ran_day(text):
     text = str(text).strip()
     if not text:
         return False
-    if RAN_RE.search(text):
+    if RAN_RE.search(text) or RUN_DISTANCE_RE.search(text):
         return True
     if CROSS_TRAINING_RE.search(text):
         return False
