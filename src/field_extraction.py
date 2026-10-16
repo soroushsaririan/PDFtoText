@@ -20,23 +20,35 @@ CUE_OPTIONS = [
     "Taking breaks when needed",
 ]
 
+# Labels are matched by stripping every non-alphanumeric character and
+# testing for a substring of one printed OCR line (field_reader.label_hits),
+# so each entry below has to be the form's ACTUAL printed wording, on ONE
+# line, and at least 6 characters once normalized. Paraphrasing silently
+# costs the whole field: the label is never located, and every value comes
+# out "Not documented".
 WEEKLY_LABELS = [
     ("Participant ID:", "participant_id", "text"),
     ("Date:", "date", "text"),
-    ("Weekly visit #:", "weekly_visit", "number"),
-    ("Days completed exercise as prescribed:", "days_exercised", "number"),
-    ("Number of exercises per session:", "exercises_per_session", "number"),
-    ("Any exercises too difficult?", "too_difficult", "yesno"),
-    ("Confident in correct running form?", "confident_form", "yesno"),
-    ("Incorporated running-form cues?", "cues_used", "yesno"),
-    ("Days ran this week:", "days_ran", "number"),
-    ("Mileage this week:", "mileage", "number"),
+    ("Weekly visit:", "weekly_visit", "number"),
+    ("Tester:", "tester", "text"),
+    ("Days completed the exercise as prescribed on handout", "days_exercised", "number"),
+    ("Number of exercises completed in each session", "exercises_per_session", "number"),
+    ("Any exercises that were too difficult?", "too_difficult", "yesno"),
+    ("Were you confident that you had correct form?", "confident_form", "yesno"),
+    # This question wraps onto a second printed line ("Were you able to
+    # incorporate any cues on running / form into your training?") and the
+    # Yes/No sits on that second line, which is the one to anchor on.
+    ("form into your training?", "cues_used", "yesno"),
+    ("How many days did you run this week?", "days_ran", "number"),
+    ("What was the mileage this week?", "mileage", "number"),
     ("Total minutes running this week (min):", "running_minutes", "number"),
-    ("Other exercise this week?", "other_exercise", "yesno"),
-    ("Pain RIGHT NOW", "pain_now", "number"),
-    ("USUAL pain during the last week:", "pain_usual", "number"),
-    ("BEST pain during the last week:", "pain_best", "number"),
-    ("WORST pain during the last week:", "pain_worst", "number"),
+    ("Did you participate in any other exercise", "other_exercise", "yesno"),
+    # Weekly says "overall body pain RIGHT NOW?", visit 1 and the final visit
+    # say "body pain RIGHT NOW?" -- this suffix matches all three.
+    ("body pain RIGHT NOW?", "pain_now", "number"),
+    ("your USUAL pain level during the last week?", "pain_usual", "number"),
+    ("your BEST pain level during the last week?", "pain_best", "number"),
+    ("your WORST pain level during the last week?", "pain_worst", "number"),
     ("Therapist / participant notes:", "notes", "text"),
 ]
 
@@ -44,20 +56,30 @@ INTAKE_LABELS = [
     ("Participant ID:", "participant_id", "text"),
     ("Tester:", "tester", "text"),
     ("Age (yrs):", "age", "number"),
-    ("Injury diagnosis (if known):", "injury_diagnosis", "text"),
+    # The printed form reads "Injury diagnosis (in known)" -- a typo on the
+    # form itself, so match on the part that is stable.
+    ("Injury diagnosis", "injury_diagnosis", "text"),
     ("Current injury location:", "injury_location", "text"),
+    ("body pain RIGHT NOW?", "pain_now", "number"),
+    ("your USUAL pain level during the last week?", "pain_usual", "number"),
+    ("your BEST pain level during the last week?", "pain_best", "number"),
+    ("your WORST pain level during the last week?", "pain_worst", "number"),
 ]
 
 FINAL_LABELS = [
     ("Participant ID:", "participant_id", "text"),
-    ("Days completed exercise (days/week):", "days_exercised", "number"),
-    ("Number of exercises per session:", "exercises_per_session", "number"),
-    ("Confident in correct running form?", "confident_form", "yesno"),
-    ("Mileage this week:", "mileage", "number"),
-    ("Pain RIGHT NOW", "pain_now", "number"),
-    ("USUAL pain during the last week:", "pain_usual", "number"),
-    ("BEST pain during the last week:", "pain_best", "number"),
-    ("WORST pain during the last week:", "pain_worst", "number"),
+    ("Age (yrs):", "age", "number"),
+    ("Days completed the exercise as prescribed on handout", "days_exercised", "number"),
+    ("Number of exercises completed in each session", "exercises_per_session", "number"),
+    ("Any exercises that were too difficult?", "too_difficult", "yesno"),
+    # The final visit asks this differently from the weekly form.
+    ("confident now that you have correct running form?", "confident_form", "yesno"),
+    ("Total distance running per week?", "distance_per_week", "number"),
+    ("Total minutes of running a week", "running_minutes", "number"),
+    ("body pain RIGHT NOW?", "pain_now", "number"),
+    ("your USUAL pain level during the last week?", "pain_usual", "number"),
+    ("your BEST pain level during the last week?", "pain_best", "number"),
+    ("your WORST pain level during the last week?", "pain_worst", "number"),
     ("Overall summary / therapist notes:", "notes", "text"),
 ]
 
