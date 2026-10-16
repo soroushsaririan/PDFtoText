@@ -69,6 +69,14 @@ class TestDiscoverFiles:
         got = ap.discover_files(d)
         assert [p.name for p in got["unmatched"]] == ["random handout.pdf"]
 
+    def test_printed_email_in_a_week_folder_is_unmatched_not_a_form(self, tmp_path):
+        d = tmp_path / "VPT007"
+        touch(d / "VPT007 weekly exercise log" / "week 2" / "VPT week 2 email communication.pdf")
+        touch(d / "VPT007 weekly exercise log" / "week 2" / "VPT007 Week 2 VPT survey.pdf")
+        got = ap.discover_files(d)
+        assert [p.name for p in got["unmatched"]] == ["VPT week 2 email communication.pdf"]
+        assert [p.name for p in got["weeks"][0]["files"]] == ["VPT007 Week 2 VPT survey.pdf"]
+
     def test_dari_and_video_subtrees_are_skipped_entirely(self, tmp_path):
         d = tmp_path / "VPT004"
         touch(d / "video" / "Week 1" / "clip.pdf")

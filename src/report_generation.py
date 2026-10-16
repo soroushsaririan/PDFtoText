@@ -82,6 +82,22 @@ def render_participant_report(result, keywords_configured):
         lines.append(f"_Source: {result['exit']['file']}_\n")
         lines.append(_fields_table(result["exit"]["fields"]))
 
+    review = result.get("review") or []
+    if review:
+        lines.append("\n## Fields To Verify")
+        lines.append(
+            "_The handwriting model read each of these more than once (different crops / prompts) and the "
+            "readings didn't agree. The value shown in the tables above is the best guess; check it against "
+            "the crop image or the source PDF._"
+        )
+        lines.append("")
+        lines.append("| Source | Field | Reported value | Readings | Crop |")
+        lines.append("|---|---|---|---|---|")
+        for item in review:
+            where = item["source"] if item.get("week") is None else f"{item['source']} (week {item['week']})"
+            lines.append(f"| {where} | {item['field'].replace('_', ' ')} | {item['value']} | "
+                         f"{item['readings']} | {item['crop']} |")
+
     lines.append("\n## Keyword Matches")
     if not keywords_configured:
         lines.append("_No keywords configured yet -- add terms to config/keywords.txt to enable this section._")

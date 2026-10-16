@@ -1,4 +1,8 @@
+from types import SimpleNamespace
+
 import pytest
+
+import consensus
 
 import field_extraction as fx
 from field_extraction import NOT_DOCUMENTED, UNCERTAIN
@@ -219,3 +223,62 @@ class TestKeywordSearch:
         text = "x" * 200 + "pain" + "y" * 200
         hit = fx.keyword_search(text, ["pain"], context_chars=10)[0]
         assert hit["context"] == "x" * 10 + "pain" + "y" * 10
+
+
+def _read(key, value, status, readings=None):
+    return SimpleNamespace(key=key, value=value, status=status, crop_path=f"/crops/{key}.png",
+                           readings=readings or [["raised", "answer", value]])
+
+
+class TestLabelAnchoredReads:
+    """The mlx engine attaches field_reads to each page; those win over the
+    line-based reading for every non yes/no field."""
+
+    def _page(self, *reads, lines=()):
+        return SimpleNamespace(lines=list(lines), field_reads=list(reads))
+
+    def test_agreed_read_becomes_the_value(self):
+        p = self._page(_read("days_ran", "3", consensus.AGREED))
+        fields, raw = fx.extract_fields([p], LABELS)
+        assert fields["days_ran"] == "3"
+        assert raw["days_ran"] == "raised/answer: 3"
+
+    def test_illegible_read_is_uncertain(self):
+        p = self._page(_read("days_ran", "[illegible]", consensus.ILLEGIBLE))
+        fields, _ = fx.extract_fields([p], LABELS)
+        assert fields["days_ran"] == UNCERTAIN
+
+    def test_blank_read_is_not_documented(self):
+        p = self._page(_read("notes", consensus.BLANK, consensus.AGREED))
+        fields, _ = fx.extract_fields([p], LABELS)
+        assert fields["notes"] == NOT_DOCUMENTED
+
+    def test_yesno_still_comes_from_the_circled_answer(self, line):
+        p = self._page(_read("confident_form", "No", consensus.AGREED),
+                       lines=[line("Confident in correct running form? Yes No  [ANSWER: Yes]")])
+        fields, _ = fx.extract_fields([p], LABELS)
+        assert fields["confident_form"] == "Yes"
+
+    def test_legible_read_on_a_later_page_beats_an_illegible_one(self):
+        first = self._page(_read("days_ran", "[illegible]", consensus.ILLEGIBLE))
+        second = self._page(_read("days_ran", "4", consensus.AGREED))
+        fields, _ = fx.extract_fields([first, second], LABELS)
+        assert fields["days_ran"] == "4"
+
+    def test_review_lists_only_disagreements(self):
+        p = self._page(
+            _read("days_ran", "3", consensus.AGREED),
+            _read("participant_id", "VPT012", consensus.REVIEW,
+                  [["raised", "answer", "VPT012"], ["raised", "discriminative", "VPT002"]]),
+        )
+        review = fx.field_review([p], LABELS)
+        assert list(review) == ["participant_id"]
+        assert review["participant_id"]["value"] == "VPT012"
+        assert review["participant_id"]["readings"] == "raised/answer: VPT012; raised/discriminative: VPT002"
+        assert review["participant_id"]["crop"] == "/crops/participant_id.png"
+
+    def test_pages_without_field_reads_behave_as_before(self, line, page):
+        p = page(line("Days ran this week:"), line("3", engine="handwriting"))
+        fields, _ = fx.extract_fields([p], LABELS)
+        assert fields["days_ran"] == "3"
+        assert fx.field_review([p], LABELS) == {}

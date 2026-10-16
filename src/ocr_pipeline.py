@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 import re
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -11,11 +12,14 @@ import pytesseract
 from PIL import Image
 from pytesseract import Output
 
+import consensus
+import field_reader
 import prompts
 
 VLM_MODEL_NAME = os.environ.get("VLM_MODEL_NAME", "Qwen/Qwen2.5-VL-3B-Instruct")
 TROCR_MODEL_NAME = os.environ.get("TROCR_MODEL_NAME", "microsoft/trocr-base-handwritten")
-HANDWRITING_ENGINES = ("vlm", "trocr")
+MLX_MODEL_NAME = os.environ.get("MLX_MODEL_NAME", "mlx-community/Qwen2.5-VL-7B-Instruct-4bit")
+HANDWRITING_ENGINES = ("mlx", "vlm", "trocr")
 
 VLM_MAX_NEW_TOKENS = {"notes": 128}
 VLM_MAX_NEW_TOKENS_DEFAULT = 32
@@ -121,6 +125,45 @@ def _vlm_read(pil_crop, label_context):
     return _clean_vlm_text(decoded), 0.0
 
 
+_mlx_model = None
+_mlx_processor = None
+
+
+def _load_mlx():
+    """Apple-Silicon-native 4-bit-quantized 7B, via the MLX framework rather
+    than transformers/torch -- a full-precision 7B (~14GB) doesn't fit
+    comfortably in 16GB unified memory, but this quantizes down to ~4.5GB."""
+    global _mlx_model, _mlx_processor
+    if _mlx_model is None:
+        from mlx_vlm import load as mlx_load
+
+        _mlx_model, _mlx_processor = mlx_load(MLX_MODEL_NAME)
+    return _mlx_model, _mlx_processor
+
+
+def mlx_generate(pil_crop, prompt, max_new_tokens):
+    """generate()'s image= wiring only produces real output when the prompt has
+    already been through apply_chat_template(..., num_images=1) -- skipping
+    that step silently drops the image and the model just asks to see one."""
+    from mlx_vlm import generate
+    from mlx_vlm.prompt_utils import apply_chat_template
+
+    model, processor = _load_mlx()
+    templated = apply_chat_template(processor, model.config, prompt, num_images=1)
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=True) as f:
+        pil_crop.convert("RGB").save(f.name)
+        result = generate(model, processor, templated, image=f.name,
+                          max_tokens=max_new_tokens, temperature=0.0, verbose=False)
+    return result.text.strip()
+
+
+def _mlx_read(pil_crop, label_context):
+    field_kind = prompts.infer_field_kind(label_context)
+    prompt = _build_prompt(label_context, field_kind=field_kind)
+    max_new_tokens = VLM_MAX_NEW_TOKENS.get(field_kind, VLM_MAX_NEW_TOKENS_DEFAULT)
+    return _clean_vlm_text(mlx_generate(_upscale_for_vlm(pil_crop.convert("RGB")), prompt, max_new_tokens)), 0.0
+
+
 _trocr_processor = None
 _trocr_model = None
 
@@ -158,7 +201,7 @@ def _trocr_read(pil_crop, label_context=None):
     return text.strip(), 0.0
 
 
-HANDWRITING_READERS = {"vlm": _vlm_read, "trocr": _trocr_read}
+HANDWRITING_READERS = {"mlx": _mlx_read, "vlm": _vlm_read, "trocr": _trocr_read}
 
 
 @dataclass
@@ -170,10 +213,25 @@ class OcrLine:
 
 
 @dataclass
+class FieldRead:
+    """One label-anchored handwritten field, read several ways and combined
+    (see consensus.decide). readings are [crop variant, prompt style, text]."""
+    key: str
+    label: str
+    occurrence: int
+    value: str
+    status: str
+    readings: list
+    bbox: tuple
+    crop_path: str = ""
+
+
+@dataclass
 class PageResult:
     page_number: int
     image_path: str
     lines: list = field(default_factory=list)
+    field_reads: list = field(default_factory=list)
 
     @property
     def text(self):
@@ -368,40 +426,150 @@ def ocr_page(image_path, use_vlm=True, label_hint=None, engine="vlm"):
     return result_lines
 
 
+# Each read is (crop variant, prompt style); --passes N uses the first N
+# whose crop could be built.
+# Ordered best-first: on a disagreement with no majority, earlier wins.
+# On 208 hand-checked real fields (benchmark/score_crop_variants.py,
+# participant ID excluded) the single reads scored ink 83%, raised 82%,
+# label 74%. Two reads, ink then raised: 85% overall, and the 79% of fields
+# where both agree were 96% right; the 21% flagged held 26 of the 32
+# errors. A third read (label) accepts more fields but at 92%, so the
+# default stays at two. discriminative writes up to 400 tokens per read
+# where answer writes a few, and didn't beat answer on the 44-field sample.
+READ_PLAN = (
+    ("ink", "answer"),
+    ("raised", "answer"),
+    ("label", "answer"),
+    ("raised", "discriminative"),
+)
+STRUCTURED_MAX_NEW_TOKENS = 400
+
+# Structured prompt styles answer in numbered fields; this is the one that
+# carries the value, per prompts.py's _FIELDS.
+STRUCTURED_VALUE_FIELD = {
+    "number": "VALUE AS WRITTEN",
+    "pain": "VALUE 0-10",
+    "text": "TEXT AS WRITTEN",
+    "notes": "TRANSCRIPTION",
+}
+
+
+def structured_value(raw_text, field_kind, style):
+    if style == "answer":
+        return raw_text
+    name = STRUCTURED_VALUE_FIELD.get(field_kind)
+    if not name:
+        return raw_text
+    for line in raw_text.splitlines():
+        m = re.match(rf"^\s*(?:\d+\.\s*)?{re.escape(name)}\s*:\s*(.*)$", line, re.I)
+        if m:
+            return m.group(1).strip()
+    return None
+
+
+# Participant ID comes from the folder name (analyze_participant), so the
+# handwritten one isn't worth model time -- it was also the single most
+# misread field on the ground-truth sample (7 of 17 misses).
+SKIP_HANDWRITTEN_KEYS = {"participant_id"}
+
+
+def _handwritten_labels():
+    from field_extraction import EXIT_LABELS, FINAL_LABELS, INTAKE_LABELS, WEEKLY_LABELS
+
+    seen = {}
+    for label_set in (WEEKLY_LABELS, INTAKE_LABELS, FINAL_LABELS, EXIT_LABELS):
+        for label, key, kind in label_set:
+            if kind != "yesno" and key not in SKIP_HANDWRITTEN_KEYS:
+                seen.setdefault(label, (label, key, kind))
+    return list(seen.values())
+
+
+def read_label_fields(page_image, field_dir, passes, generate=None):
+    """Read every handwritten (non yes/no) field whose printed label is on
+    this page, `passes` times each per READ_PLAN, and combine the readings.
+    The raised crop is saved under field_dir for whoever reviews it."""
+    generate = generate or mlx_generate
+    field_dir = Path(field_dir)
+    field_dir.mkdir(parents=True, exist_ok=True)
+    gray = np.array(page_image.convert("L"))
+    passes = max(1, passes)
+    reads = []
+    for label, key, kind, field_kind, occ, label_box, max_x1, ceiling in field_reader.locate_fields(
+            page_image, _handwritten_labels()):
+        crops = field_reader.crop_variants(page_image, label_box, field_kind, max_x1=max_x1, gray=gray, ceiling=ceiling)
+        if not crops:
+            continue
+        readings = []
+        # a variant that couldn't be built hands its pass to the next in READ_PLAN
+        plan = [(variant, style) for variant, style in READ_PLAN if variant in crops][:passes]
+        for variant, style in plan:
+            crop = crops[variant]
+            budget = STRUCTURED_MAX_NEW_TOKENS if style != "answer" else \
+                VLM_MAX_NEW_TOKENS.get(field_kind, VLM_MAX_NEW_TOKENS_DEFAULT)
+            prompt = prompts.build_prompt(label_context=label, field_kind=field_kind, style=style)
+            try:
+                raw = generate(_upscale_for_vlm(crop), prompt, budget)
+                text = structured_value(raw, field_kind, style)
+            except Exception as exc:
+                text = f"[error: {exc}]"
+            readings.append([variant, style, None if text is None else _clean_vlm_text(text)])
+        decision = consensus.decide([r[2] for r in readings], field_kind=field_kind)
+        shown = crops.get("raised") or crops["label"]
+        crop_path = field_dir / f"{key}_{occ}.png"
+        shown.save(crop_path)
+        reads.append(FieldRead(
+            key=key, label=label, occurrence=occ, value=decision.value, status=decision.status,
+            readings=readings, bbox=tuple(int(v) for v in label_box), crop_path=str(crop_path),
+        ))
+    return reads
+
+
 def _engine_model_name(engine):
-    return VLM_MODEL_NAME if engine == "vlm" else TROCR_MODEL_NAME
+    return {"mlx": MLX_MODEL_NAME, "vlm": VLM_MODEL_NAME}.get(engine, TROCR_MODEL_NAME)
 
 
-def _cache_key(file_path, engine):
+def _cache_key(file_path, engine, passes=1):
     stat = Path(file_path).stat()
     raw = f"{file_path}:{stat.st_size}:{stat.st_mtime}:{engine}:{_engine_model_name(engine)}"
     if engine == "vlm":
         raw += f":prompt-{prompts.PROMPT_REVISION}"
+    if engine == "mlx":
+        plan = READ_PLAN[:max(1, passes)]
+        raw += f":prompt-{prompts.PROMPT_REVISION}:plan-{plan}"
     return hashlib.sha1(raw.encode()).hexdigest()[:16]
 
 
-def run_ocr_on_file(file_path, image_dir, ocr_cache_dir, use_vlm=True, force=False, engine="vlm"):
+def run_ocr_on_file(file_path, image_dir, ocr_cache_dir, use_vlm=True, force=False, engine="mlx", passes=2):
     if engine not in HANDWRITING_ENGINES:
         raise ValueError(f"Unknown handwriting engine: {engine!r} (expected one of {HANDWRITING_ENGINES})")
 
     file_path = Path(file_path)
     ocr_cache_dir = Path(ocr_cache_dir)
     ocr_cache_dir.mkdir(parents=True, exist_ok=True)
-    cache_path = ocr_cache_dir / f"{file_path.stem}.{_cache_key(file_path, engine)}.json"
+    cache_path = ocr_cache_dir / f"{file_path.stem}.{_cache_key(file_path, engine, passes)}.json"
 
     if cache_path.exists() and not force:
         cached = json.loads(cache_path.read_text())
         pages = []
         for p in cached["pages"]:
             lines = [OcrLine(text=l["text"], bbox=tuple(l["bbox"]), engine=l["engine"], confidence=l["confidence"]) for l in p["lines"]]
-            pages.append(PageResult(page_number=p["page_number"], image_path=p["image_path"], lines=lines))
+            reads = [FieldRead(**{**r, "bbox": tuple(r["bbox"])}) for r in p.get("field_reads", [])]
+            pages.append(PageResult(page_number=p["page_number"], image_path=p["image_path"], lines=lines, field_reads=reads))
         return pages
 
+    # mlx reads handwriting per printed label (field_reader) rather than per
+    # low-confidence tesseract run, so the line pass only needs printed text,
+    # circled Yes/No answers and checkboxes.
+    label_anchored = engine == "mlx" and use_vlm
     image_paths = render_file_to_images(file_path, Path(image_dir) / file_path.stem)
     pages = []
     for i, img_path in enumerate(image_paths, start=1):
-        lines = ocr_page(img_path, use_vlm=use_vlm, engine=engine)
-        pages.append(PageResult(page_number=i, image_path=str(img_path), lines=lines))
+        lines = ocr_page(img_path, use_vlm=use_vlm and not label_anchored, engine=engine)
+        reads = []
+        if label_anchored:
+            field_dir = Path(img_path).parent / "fields" / f"page_{i:02d}"
+            reads = read_label_fields(Image.open(img_path).convert("RGB"), field_dir, passes)
+        pages.append(PageResult(page_number=i, image_path=str(img_path), lines=lines, field_reads=reads))
 
     serializable = {
         "source": str(file_path),
@@ -412,6 +580,7 @@ def run_ocr_on_file(file_path, image_dir, ocr_cache_dir, use_vlm=True, force=Fal
                 "page_number": p.page_number,
                 "image_path": p.image_path,
                 "lines": [l.__dict__ for l in p.lines],
+                "field_reads": [r.__dict__ for r in p.field_reads],
             }
             for p in pages
         ],

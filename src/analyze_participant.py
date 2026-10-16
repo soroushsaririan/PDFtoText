@@ -25,6 +25,13 @@ NO_SESSION_RE = re.compile(r"\bno\b\s+(week\s*\d*|exercise\s+log)", re.I)
 # any week folders. Being empty, it's otherwise invisible to file discovery.
 NO_LOG_DIR_RE = re.compile(r"^no\s*vpt\d+", re.I)
 
+# Printed emails sometimes get filed alongside a week's forms (e.g.
+# "VPT week 2 email communication.pdf"). They carry no form fields, but
+# mention form names like "VPT Weekly Visit (2).pdf" in their attachment
+# lists, which the label-anchored reader would mistake for the printed
+# "Weekly visit" question. Surface them for a person instead of OCRing them.
+EMAIL_RE = re.compile(r"\be-?mail\b", re.I)
+
 DOC_EXTS = {".pdf", ".jpg", ".jpeg", ".png"}
 NOTE_EXTS = {".docx"}
 
@@ -94,6 +101,10 @@ def discover_files(participant_dir):
         rel = str(path.relative_to(participant_dir))
         ext = path.suffix.lower()
 
+        if EMAIL_RE.search(path.name):
+            unmatched.append(path)
+            continue
+
         m_crf = CRF_RE.search(path.name)
         if ext == ".pdf" and m_crf:
             crf_visits.append((int(m_crf.group(1)), path))
@@ -156,7 +167,8 @@ def discover_files(participant_dir):
     return {"crf_visits": crf_visits, "exit_survey": exit_survey, "weeks": weeks, "unmatched": unmatched}
 
 
-def analyze_participant(participant_dir, image_dir, ocr_cache_dir, keywords, use_vlm=True, force=False, engine="vlm"):
+def analyze_participant(participant_dir, image_dir, ocr_cache_dir, keywords, use_vlm=True, force=False, engine="mlx",
+                        passes=2):
     participant_dir = Path(participant_dir)
     pid = participant_dir.name
     files = discover_files(participant_dir)
@@ -169,13 +181,19 @@ def analyze_participant(participant_dir, image_dir, ocr_cache_dir, keywords, use
         "exit": None,
         "weeks": [],
         "keyword_hits": [],
+        "review": [],
         "unmatched_files": [str(p.relative_to(participant_dir)) for p in files["unmatched"]],
     }
 
     def ocr_one(path):
         return run_ocr_on_file(
             path, image_dir=image_dir, ocr_cache_dir=ocr_cache_dir, use_vlm=use_vlm, force=force, engine=engine,
+            passes=passes,
         )
+
+    def queue_review(pages, label_set, source, form, week=None):
+        for key, entry in fx.field_review(pages, label_set).items():
+            result["review"].append({"source": source, "form": form, "week": week, "field": key, **entry})
 
     def ocr_many(paths):
         pages = []
@@ -189,9 +207,11 @@ def analyze_participant(participant_dir, image_dir, ocr_cache_dir, keywords, use
         result["keyword_hits"] += [dict(h, source=path.name) for h in fx.keyword_search(text, keywords)]
         if visit_num == 1:
             fields, raw = fx.extract_intake_record(pages)
+            queue_review(pages, fx.INTAKE_LABELS, path.name, f"CRF visit {visit_num}")
             result["intake"] = {"visit": visit_num, "file": path.name, "fields": fields}
         else:
             fields, raw = fx.extract_final_record(pages)
+            queue_review(pages, fx.FINAL_LABELS, path.name, f"CRF visit {visit_num}")
             entry = {"visit": visit_num, "file": path.name, "fields": fields}
             if visit_num == files["crf_visits"][-1][0]:
                 result["final"] = entry
@@ -204,6 +224,7 @@ def analyze_participant(participant_dir, image_dir, ocr_cache_dir, keywords, use
         text = full_text(pages)
         result["keyword_hits"] += [dict(h, source=path.name) for h in fx.keyword_search(text, keywords)]
         fields, raw = fx.extract_exit_record(pages)
+        queue_review(pages, fx.EXIT_LABELS, path.name, "exit survey")
         result["exit"] = {"file": path.name, "fields": fields}
 
     for wk in files["weeks"]:
@@ -224,6 +245,7 @@ def analyze_participant(participant_dir, image_dir, ocr_cache_dir, keywords, use
         file_names = ", ".join(p.name for p in wk["files"])
         result["keyword_hits"] += [dict(h, source=file_names) for h in fx.keyword_search(text, keywords)]
         fields, raw = fx.extract_weekly_record(pages)
+        queue_review(pages, fx.WEEKLY_LABELS, file_names, "weekly", week=wk["week"])
         result["weeks"].append({"week": wk["week"], "status": "completed", "note": None, "fields": fields, "raw": raw, "file": file_names})
 
     return result

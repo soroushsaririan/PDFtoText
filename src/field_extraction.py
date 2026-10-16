@@ -1,5 +1,7 @@
 import re
 
+import consensus
+
 NOT_DOCUMENTED = "Not documented"
 UNCERTAIN = "Uncertain"
 
@@ -90,6 +92,53 @@ def flatten_lines(pages):
     return out
 
 
+def _label_reads(pages):
+    """The first legible label-anchored read per field key across pages
+    (falling back to an illegible one). Only the mlx engine produces these."""
+    reads = {}
+    for page in pages:
+        for read in getattr(page, "field_reads", None) or []:
+            current = reads.get(read.key)
+            if current is None or (current.status == consensus.ILLEGIBLE and read.status != consensus.ILLEGIBLE):
+                reads[read.key] = read
+    return reads
+
+
+def _value_from_read(read, kind):
+    if read.status == consensus.ILLEGIBLE:
+        return UNCERTAIN
+    if read.value == consensus.BLANK:
+        return NOT_DOCUMENTED
+    if kind == "number":
+        m = NUMBER_RE.search(read.value)
+        return m.group(0) if m else UNCERTAIN
+    return _clean(read.value)
+
+
+def _readings_text(read):
+    return "; ".join(f"{variant}/{style}: {text}" for variant, style, text in read.readings)
+
+
+def field_review(pages, label_set):
+    """{key: entry} for every label-anchored field in label_set whose
+    readings didn't agree -- the value was kept, but a person should check
+    it against the crop."""
+    reads = _label_reads(pages)
+    review = {}
+    for label, key, kind in label_set:
+        read = reads.get(key)
+        if read is None or kind == "yesno" or read.status == consensus.AGREED:
+            continue
+        review[key] = {
+            "label": label,
+            "value": _value_from_read(read, kind),
+            "status": read.status,
+            "readings": _readings_text(read),
+            "crop": read.crop_path,
+        }
+    return review
+
+
 def extract_fields(pages, label_set):
     lines = flatten_lines(pages)
     fields = {key: NOT_DOCUMENTED for _, key, _ in label_set}
@@ -136,6 +185,14 @@ def extract_fields(pages, label_set):
                 fields[key] = m.group(0) if m else UNCERTAIN
             else:
                 fields[key] = _clean(value_text)
+
+    reads = _label_reads(pages)
+    for label, key, kind in label_set:
+        read = reads.get(key)
+        if read is None or kind == "yesno":
+            continue
+        fields[key] = _value_from_read(read, kind)
+        raw_ocr[key] = _readings_text(read)
 
     return fields, raw_ocr
 
