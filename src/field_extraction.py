@@ -238,7 +238,24 @@ def extract_weekly_record(pages):
     fields, raw = extract_fields(pages, WEEKLY_LABELS)
     fields["exercise_types"] = extract_checked_options(pages, EXERCISE_OPTIONS) or [NOT_DOCUMENTED]
     fields["cues_list"] = extract_checked_options(pages, CUE_OPTIONS)
+    merge_exercise_log(fields, pages)
     return fields, raw
+
+
+def merge_exercise_log(fields, pages):
+    """Fill weekly fields from an Exercise Log table where the session form
+    didn't supply them.
+
+    Half the study's participant-weeks have an Exercise Log and no session
+    form at all, so without this they carry no data. Where both exist the
+    session form wins: it is the clinician-completed record, and the log's
+    totals are derived from seven separate handwritten cells.
+    """
+    for page in pages:
+        for key, value in (getattr(page, "log_summary", None) or {}).items():
+            if _looks_illegible(str(fields.get(key, ""))) or fields.get(key) in (None, NOT_DOCUMENTED):
+                fields[key] = value
+    return fields
 
 
 def extract_intake_record(pages):

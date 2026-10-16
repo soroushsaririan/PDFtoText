@@ -18,6 +18,7 @@ from pytesseract import Output
 pillow_heif.register_heif_opener()
 
 import consensus
+import exercise_log
 import field_reader
 import prompts
 
@@ -237,6 +238,8 @@ class PageResult:
     image_path: str
     lines: list = field(default_factory=list)
     field_reads: list = field(default_factory=list)
+    log_days: list = field(default_factory=list)
+    log_summary: dict = field(default_factory=dict)
 
     @property
     def text(self):
@@ -558,6 +561,53 @@ def read_label_fields(page_image, field_dir, passes, generate=None):
     return reads
 
 
+# What to ask for each Exercise Log column. The column headers are long and
+# wrap, so the model gets the question rather than the printed header.
+LOG_CELL_PROMPTS = {
+    "completed": ("Did they mark this box as done? Answer with exactly one word: "
+                  "CHECK if it holds a tick or check mark, X if it holds a cross, "
+                  "BLANK if it is empty.", "answer", 8),
+    "exercise_count": ("How many exercises were completed? Answer with the number only, "
+                       "or BLANK if the cell is empty.", "number", 12),
+    "running": ("Copy out exactly what is written in this cell about running or other "
+                "exercise, including any mileage. Answer BLANK if it is empty.", "notes", 48),
+}
+
+
+def log_page_words(page_image):
+    """Tesseract words for an Exercise Log page.
+
+    Deliberately NOT field_reader.page_words: that passes --psm 6 ("one
+    uniform block of text"), which suits the session forms but misreads a
+    nine-column table -- it found the table on 26 of 54 log pages against
+    41 for the default page-segmentation mode.
+    """
+    return pytesseract.image_to_data(page_image, output_type=Output.DICT)
+
+
+def read_exercise_log(page_image, field_dir, generate=None):
+    """Per-day readings and weekly totals for an Exercise Log page, or
+    (None, None) when the page isn't one or its table can't be located."""
+    data = log_page_words(page_image)
+    if not exercise_log.is_exercise_log(data):
+        return None, None
+    generate = generate or mlx_generate
+    field_dir = Path(field_dir)
+    field_dir.mkdir(parents=True, exist_ok=True)
+
+    def read_cell(crop, column, day):
+        prompt, field_kind, budget = LOG_CELL_PROMPTS[column]
+        crop.save(field_dir / f"day{day}_{column}.png")
+        try:
+            raw = generate(_upscale_for_vlm(crop), prompt, budget)
+        except Exception as exc:
+            return f"[error: {exc}]"
+        text = _clean_vlm_text(raw)
+        return None if text is None or text.strip().upper() == "BLANK" else text
+
+    return exercise_log.read_table(page_image, data, read_cell, columns=tuple(LOG_CELL_PROMPTS))
+
+
 def _engine_model_name(engine):
     return {"mlx": MLX_MODEL_NAME, "vlm": VLM_MODEL_NAME}.get(engine, TROCR_MODEL_NAME)
 
@@ -588,7 +638,9 @@ def run_ocr_on_file(file_path, image_dir, ocr_cache_dir, use_vlm=True, force=Fal
         for p in cached["pages"]:
             lines = [OcrLine(text=l["text"], bbox=tuple(l["bbox"]), engine=l["engine"], confidence=l["confidence"]) for l in p["lines"]]
             reads = [FieldRead(**{**r, "bbox": tuple(r["bbox"])}) for r in p.get("field_reads", [])]
-            pages.append(PageResult(page_number=p["page_number"], image_path=p["image_path"], lines=lines, field_reads=reads))
+            pages.append(PageResult(page_number=p["page_number"], image_path=p["image_path"], lines=lines,
+                                    field_reads=reads, log_days=p.get("log_days") or [],
+                                    log_summary=p.get("log_summary") or {}))
         return pages
 
     # mlx reads handwriting per printed label (field_reader) rather than per
@@ -599,11 +651,17 @@ def run_ocr_on_file(file_path, image_dir, ocr_cache_dir, use_vlm=True, force=Fal
     pages = []
     for i, img_path in enumerate(image_paths, start=1):
         lines = ocr_page(img_path, use_vlm=use_vlm and not label_anchored, engine=engine)
-        reads = []
+        reads, log_days, log_summary = [], None, None
         if label_anchored:
             field_dir = Path(img_path).parent / "fields" / f"page_{i:02d}"
-            reads = read_label_fields(Image.open(img_path).convert("RGB"), field_dir, passes)
-        pages.append(PageResult(page_number=i, image_path=str(img_path), lines=lines, field_reads=reads))
+            page_image = Image.open(img_path).convert("RGB")
+            reads = read_label_fields(page_image, field_dir, passes)
+            if not reads:
+                # No printed labels on this page -- it may be an Exercise Log,
+                # which is a table rather than label/answer pairs.
+                log_days, log_summary = read_exercise_log(page_image, field_dir / "log")
+        pages.append(PageResult(page_number=i, image_path=str(img_path), lines=lines, field_reads=reads,
+                                log_days=log_days or [], log_summary=log_summary or {}))
 
     serializable = {
         "source": str(file_path),
@@ -615,6 +673,8 @@ def run_ocr_on_file(file_path, image_dir, ocr_cache_dir, use_vlm=True, force=Fal
                 "image_path": p.image_path,
                 "lines": [l.__dict__ for l in p.lines],
                 "field_reads": [r.__dict__ for r in p.field_reads],
+                "log_days": p.log_days,
+                "log_summary": p.log_summary,
             }
             for p in pages
         ],
