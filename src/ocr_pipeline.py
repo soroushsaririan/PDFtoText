@@ -30,6 +30,9 @@ HANDWRITING_ENGINES = ("mlx", "vlm", "trocr")
 VLM_MAX_NEW_TOKENS = {"notes": 128}
 VLM_MAX_NEW_TOKENS_DEFAULT = 32
 
+# Bumped when Exercise Log reading changes, so cached pages redo it.
+EXERCISE_LOG_REVISION = 1
+
 RENDER_ZOOM = 3.0
 TESSERACT_WORD_CONF_THRESHOLD = 70
 MIN_LINE_HEIGHT = 8
@@ -619,7 +622,7 @@ def _cache_key(file_path, engine, passes=1):
         raw += f":prompt-{prompts.PROMPT_REVISION}"
     if engine == "mlx":
         plan = READ_PLAN[:max(1, passes)]
-        raw += f":prompt-{prompts.PROMPT_REVISION}:plan-{plan}"
+        raw += f":prompt-{prompts.PROMPT_REVISION}:plan-{plan}:log-{EXERCISE_LOG_REVISION}"
     return hashlib.sha1(raw.encode()).hexdigest()[:16]
 
 
