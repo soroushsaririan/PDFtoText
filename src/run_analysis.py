@@ -45,6 +45,16 @@ def build_weekly_rows(result):
     return rows
 
 
+def build_log_rows(result):
+    """One row per Exercise Log day, so the weekly totals can be checked
+    against the cells they were read from."""
+    rows = []
+    for wk in result["weeks"]:
+        for day in wk.get("log_days") or []:
+            rows.append({"participant_id": result["participant_id"], "week": wk["week"], **day})
+    return rows
+
+
 def main():
     parser = argparse.ArgumentParser(description="OCR and analyze every participant folder under --base-dir.")
     parser.add_argument("--base-dir", default=str(PROJECT_ROOT / "sample_usb"),
@@ -102,6 +112,7 @@ def main():
     print()
 
     all_rows = []
+    all_log_rows = []
     all_keyword_hits = []
     all_unmatched = []
     all_review = []
@@ -115,6 +126,7 @@ def main():
         (reports_dir / f"{pdir.name}_report.md").write_text(report_md, encoding="utf-8")
 
         all_rows.extend(build_weekly_rows(result))
+        all_log_rows.extend(build_log_rows(result))
         for hit in result["keyword_hits"]:
             all_keyword_hits.append({"participant_id": pdir.name, **hit})
         for f in result["unmatched_files"]:
@@ -126,6 +138,9 @@ def main():
     summary_df = pd.DataFrame(all_rows)
     summary_path = out_dir / "summary.csv"
     summary_df.to_csv(summary_path, index=False)
+
+    if all_log_rows:
+        pd.DataFrame(all_log_rows).to_csv(out_dir / "exercise_log_days.csv", index=False)
 
     if all_keyword_hits:
         pd.DataFrame(all_keyword_hits).to_csv(out_dir / "keyword_hits.csv", index=False)
@@ -139,6 +154,8 @@ def main():
     print()
     print(f"Reports written to : {reports_dir}")
     print(f"Weekly summary CSV : {summary_path}  ({len(summary_df)} rows)")
+    if all_log_rows:
+        print(f"Exercise log CSV   : {out_dir / 'exercise_log_days.csv'}  ({len(all_log_rows)} day rows)")
     if all_keyword_hits:
         print(f"Keyword hits CSV   : {out_dir / 'keyword_hits.csv'}  ({len(all_keyword_hits)} hits)")
     if all_review:

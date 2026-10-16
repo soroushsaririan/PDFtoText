@@ -6,6 +6,7 @@ from pathlib import Path
 import fitz
 from docx import Document
 
+import exercise_log as el
 import field_extraction as fx
 from ocr_pipeline import UnreadableFile, run_ocr_on_file, full_text
 
@@ -99,6 +100,19 @@ def _content_digest(path, chunk=1 << 20):
     except OSError:
         return None
     return digest.hexdigest()
+
+
+def _log_days(pages):
+    """Every Exercise Log row read across a week's files, day order kept.
+
+    The weekly totals are derived from these, so a figure a reviewer
+    doubts has to be traceable back to the seven cells it came from.
+    """
+    rows = []
+    for page in pages:
+        for row in getattr(page, "log_days", None) or []:
+            rows.append({"source_page": page.image_path, **row})
+    return rows
 
 
 def discover_files(participant_dir):
@@ -229,6 +243,21 @@ def analyze_participant(participant_dir, image_dir, ocr_cache_dir, keywords, use
         for key, entry in fx.field_review(pages, label_set).items():
             result["review"].append({"source": source, "form": form, "week": week, "field": key, **entry})
 
+    def queue_log_review(pages, source, week):
+        """Exercise Log figures that are out of range for this population.
+
+        A log cell is read once, so there is no second reading to disagree
+        with it -- implausibility is the only flag these can carry.
+        """
+        for page in pages:
+            days = getattr(page, "log_days", None) or []
+            for field, detail, cell in el.implausible(days, getattr(page, "log_summary", None)):
+                result["review"].append({
+                    "source": source, "form": "weekly", "week": week, "field": field,
+                    "label": "Exercise Log", "value": detail, "status": "implausible",
+                    "readings": cell or "", "crop": page.image_path,
+                })
+
     def ocr_many(paths):
         pages = []
         for path in paths:
@@ -287,6 +316,9 @@ def analyze_participant(participant_dir, image_dir, ocr_cache_dir, keywords, use
         result["keyword_hits"] += [dict(h, source=file_names) for h in fx.keyword_search(text, keywords)]
         fields, raw = fx.extract_weekly_record(pages)
         queue_review(pages, fx.WEEKLY_LABELS, file_names, "weekly", week=wk["week"])
-        result["weeks"].append({"week": wk["week"], "status": "completed", "note": None, "fields": fields, "raw": raw, "file": file_names})
+        log_days = _log_days(pages)
+        queue_log_review(pages, file_names, wk["week"])
+        result["weeks"].append({"week": wk["week"], "status": "completed", "note": None, "fields": fields,
+                                "raw": raw, "file": file_names, "log_days": log_days})
 
     return result
