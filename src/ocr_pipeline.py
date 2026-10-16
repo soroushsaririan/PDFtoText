@@ -31,7 +31,7 @@ VLM_MAX_NEW_TOKENS = {"notes": 128}
 VLM_MAX_NEW_TOKENS_DEFAULT = 32
 
 # Bumped when Exercise Log reading changes, so cached pages redo it.
-EXERCISE_LOG_REVISION = 1
+EXERCISE_LOG_REVISION = 2
 
 RENDER_ZOOM = 3.0
 TESSERACT_WORD_CONF_THRESHOLD = 70
@@ -588,11 +588,38 @@ def log_page_words(page_image):
     return pytesseract.image_to_data(page_image, output_type=Output.DICT)
 
 
+# A quarter-turn is as common as upright in this study: VPT003's four logs
+# are scanned sideways, so tesseract reads nothing off them at all. Upright
+# is tried first, then the two quarter-turns, then upside down.
+LOG_ROTATIONS = (0, 270, 90, 180)
+
+
+def upright_log_page(page_image, rotations=LOG_ROTATIONS):
+    """(image, tesseract words) for whichever turn of this page reads as an
+    Exercise Log with a locatable table, or (None, None).
+
+    A turn that finds the table beats one that only finds headers, and more
+    headers beats fewer -- a sideways page still matches a few header words
+    by chance, so "is it a log" alone picks the wrong orientation.
+    """
+    best = None
+    for angle in rotations:
+        turned = page_image if angle == 0 else page_image.rotate(angle, expand=True)
+        data = log_page_words(turned)
+        if not exercise_log.is_exercise_log(data):
+            continue
+        located = exercise_log.find_table(data, turned.width, turned.height) is not None
+        score = (located, len(exercise_log.header_positions(data)))
+        if best is None or score > best[0]:
+            best = (score, turned, data)
+    return (best[1], best[2]) if best else (None, None)
+
+
 def read_exercise_log(page_image, field_dir, generate=None):
     """Per-day readings and weekly totals for an Exercise Log page, or
     (None, None) when the page isn't one or its table can't be located."""
-    data = log_page_words(page_image)
-    if not exercise_log.is_exercise_log(data):
+    page_image, data = upright_log_page(page_image)
+    if data is None:
         return None, None
     generate = generate or mlx_generate
     field_dir = Path(field_dir)
@@ -643,7 +670,7 @@ def run_ocr_on_file(file_path, image_dir, ocr_cache_dir, use_vlm=True, force=Fal
             reads = [FieldRead(**{**r, "bbox": tuple(r["bbox"])}) for r in p.get("field_reads", [])]
             pages.append(PageResult(page_number=p["page_number"], image_path=p["image_path"], lines=lines,
                                     field_reads=reads, log_days=p.get("log_days") or [],
-                                    log_summary=p.get("log_summary") or {}))
+                                    log_summary=exercise_log.summarize(p["log_days"]) if p.get("log_days") else {}))
         return pages
 
     # mlx reads handwriting per printed label (field_reader) rather than per

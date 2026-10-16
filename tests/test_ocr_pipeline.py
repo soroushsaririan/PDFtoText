@@ -142,3 +142,76 @@ class TestRenderFileToImages:
         got = ocr.render_file_to_images(src, tmp_path / "out")
 
         assert [p.name for p in got] == ["page_01.png", "page_02.png"]
+
+
+class TestUprightLogPage:
+    """VPT003's four Exercise Logs are scanned sideways; upright they read
+    as blank pages. Tesseract is stubbed out so the test is about which
+    turn of the page gets picked, not about OCR."""
+
+    HEADERS = [
+        ("Exercise", 560, 460), ("Log", 760, 460), ("Day", 586, 657),
+        ("Date", 696, 655), ("Completed", 846, 650), ("Number", 1122, 648),
+        ("What", 1377, 645), ("difficulty", 1737, 640), ("symptoms", 2107, 635),
+    ]
+
+    def _words(self, entries):
+        data = {k: [] for k in ("text", "conf", "left", "top", "width", "height",
+                                "block_num", "par_num", "line_num")}
+        for n, (text, x, y) in enumerate(entries):
+            data["text"].append(text)
+            data["conf"].append(95.0)
+            data["left"].append(x)
+            data["top"].append(y)
+            data["width"].append(60)
+            data["height"].append(30)
+            for k in ("block_num", "par_num"):
+                data[k].append(1)
+            data["line_num"].append(n)
+        return data
+
+    def _readable_at(self, angle, monkeypatch, extra=()):
+        """Stub tesseract so only `angle` yields a readable table."""
+        landscape = self._words(self.HEADERS + list(extra))
+        blank = self._words([])
+
+        def words(image):
+            return landscape if image.width > image.height else blank
+
+        monkeypatch.setattr(ocr, "log_page_words", words)
+        return landscape, blank
+
+    def test_a_sideways_page_is_turned_upright(self, monkeypatch):
+        days = [(str(d), 578, 1008 + (d - 1) * 92) for d in (1, 4, 7)]
+        self._readable_at(270, monkeypatch, days)
+        page = Image.new("RGB", (1836, 2376), "white")
+        upright, data = ocr.upright_log_page(page)
+        assert upright is not None and upright.width > upright.height
+        assert data["text"][0] == "Exercise"
+
+    def test_an_upright_page_is_left_alone(self, monkeypatch):
+        days = [(str(d), 578, 1008 + (d - 1) * 92) for d in (1, 4, 7)]
+        self._readable_at(0, monkeypatch, days)
+        page = Image.new("RGB", (2376, 1836), "white")
+        upright, _ = ocr.upright_log_page(page)
+        assert upright is page
+
+    def test_a_page_that_is_not_a_log_is_rejected_in_every_turn(self, monkeypatch):
+        monkeypatch.setattr(ocr, "log_page_words", lambda image: self._words([("Participant", 10, 10)]))
+        page = Image.new("RGB", (1836, 2376), "white")
+        assert ocr.upright_log_page(page) == (None, None)
+
+    def test_a_turn_that_locates_the_table_beats_one_that_only_sees_headers(self, monkeypatch):
+        """Without the day numbers a sideways page can still match enough
+        header words to look like a log, so headers alone can't decide."""
+        day_rows = [(str(d), 578, 1008 + (d - 1) * 92) for d in (1, 4, 7)]
+        with_rows = self._words(self.HEADERS + day_rows)
+        headers_only = self._words(self.HEADERS)
+
+        def words(image):
+            return with_rows if image.height > image.width else headers_only
+
+        monkeypatch.setattr(ocr, "log_page_words", words)
+        page = Image.new("RGB", (2376, 1836), "white")
+        upright, _ = ocr.upright_log_page(page)
+        assert upright.height > upright.width
